@@ -1,0 +1,634 @@
+================================================================================
+MODULE 1 — LLM FUNDAMENTALS (PRODUCTION-GRADE)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-05-25
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: CONTEXT WINDOWS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DEFINITION
+----------
+The total number of tokens an LLM can "see" at once — everything in the
+conversation: system prompt, user messages, tool calls, tool results, assistant
+responses. The model has NO memory outside of it.
+
+ANALOGY
+-------
+You're a consultant who can only read documents that fit on a single conference
+table. When the table is full, adding a new document means removing an old one.
+The moment a document leaves — you forget it completely. You don't know it's
+missing. You confidently work with what's in front of you.
+
+That's the LLM. It doesn't warn you when it's lost context. It just silently
+makes worse decisions as the window fills.
+
+CONTEXT WINDOW SIZES (mid-2026)
+--------------------------------
+Claude Sonnet 4.6   → 200,000 tokens  (largest mainstream)
+GPT-4o              → 128,000 tokens
+Gemini 1.5 Pro      → 1,000,000 tokens (quality degrades at extremes)
+LLaMA 3 70B         → 128,000 tokens
+Mistral Large       → 128,000 tokens
+
+THE "LOST IN THE MIDDLE" PROBLEM
+---------------------------------
+LLMs attend strongly to the BEGINNING and END of context.
+Information buried in the MIDDLE is frequently ignored.
+
+Attention across a 100k token window:
+████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░████████████
+^-- START              MIDDLE                    END --^
+(strong)               (weak)                  (strong)
+
+→ Put critical instructions at the TOP of the system prompt, never in the middle.
+
+THE KV CACHE — WHY IT MATTERS FOR COST
+----------------------------------------
+When the model processes a prompt, it computes a Key-Value (KV) cache for every
+token. This is expensive. BUT: if the same tokens appear at the start of a new
+request, the provider can REUSE the cached computation.
+
+- Anthropic prompt caching saves ~90% on cached tokens
+- OpenAI has similar caching
+- Portkey's core cost optimization product is built on this
+
+Cache-friendly prompt structure:
+  [STABLE: system prompt]     ← cache this, never changes
+  [DYNAMIC: user messages]    ← compute fresh each time
+
+Code — Anthropic prompt caching:
+─────────────────────────────────
+import anthropic
+client = anthropic.Anthropic()
+
+response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    system=[
+        {
+            "type": "text",
+            "text": "You are an expert at analyzing financial documents.",
+            "cache_control": {"type": "ephemeral"}  # cache this prefix
+        }
+    ],
+    messages=[{"role": "user", "content": f"Analyze: {document}"}]
+)
+
+# Check cache performance:
+print(f"Cached tokens:  {response.usage.cache_read_input_tokens}")   # paid 10%
+print(f"New tokens:     {response.usage.cache_creation_input_tokens}") # paid 100%
+
+PRODUCTION MATH EXAMPLE
+------------------------
+Customer support agent, 5000-token system prompt, 10,000 requests/day:
+
+Without caching:
+  10,000 × 5,000 tokens × $0.003/1k = $150/day just for system prompts
+
+With caching:
+  1 × 5,000 × $0.003/1k = $0.015   (cache creation)
+  9,999 × 5,000 × $0.0003/1k = $15  (cache reads at 10%)
+  Total: ~$15/day
+
+Savings: $135/day. $49,000/year. Per customer. This is why Portkey exists.
+
+CODE PATTERNS
+--------------
+NAIVE (breaks in production):
+  messages = []
+  messages.append({"role": "system", "content": system_prompt})
+  for step in agent_loop:
+      messages.append({"role": "user", "content": tool_result})  # grows forever
+      response = llm.invoke(messages)  # eventually crashes
+
+PRODUCTION (trim with system prompt protection):
+  from langchain_core.messages import trim_messages
+
+  messages = trim_messages(
+      messages,
+      max_tokens=100_000,     # leave 28k headroom for output
+      strategy="last",        # keep most recent, drop oldest
+      token_counter=llm,      # exact count for your model
+      include_system=True,    # NEVER drop system prompt
+      allow_partial=False,    # full messages only, no partials
+  )
+
+TOKEN BUDGET PATTERN:
+  SYSTEM_PROMPT_TOKENS = count_tokens(system_prompt)
+  MAX_CONTEXT = 180_000           # 200k window - 20k output headroom
+  AVAILABLE_FOR_HISTORY = MAX_CONTEXT - SYSTEM_PROMPT_TOKENS
+
+  trimmed_history = trim_to_token_budget(messages[1:], AVAILABLE_FOR_HISTORY)
+  final_messages = [messages[0]] + trimmed_history  # [0] = system prompt, always kept
+
+FAILURE MODES
+--------------
+1. SYSTEM PROMPT EVICTION
+   After many tool calls, trimming drops the system prompt (oldest message).
+   Agent loses all instructions. Starts hallucinating its own rules.
+   Fix: always protect messages[0] from trimming.
+
+2. CONTEXT POISONING (SECURITY)
+   Attacker sends a 50,000-token document through a tool call.
+   Pushes security constraints and user permissions out of the window.
+   Agent operates without those constraints.
+   Relevant to your garak contributions.
+
+3. LOST IN THE MIDDLE IN RAG
+   10 retrieved chunks injected into context.
+   Answer is in chunk 5 (the middle). Model ignores it.
+   Fix: rerank so most relevant chunk is always first or last.
+
+INTERVIEW MATH — KNOW THIS COLD
+---------------------------------
+Question: "Agent with 8k system prompt, 30 tool calls/user message,
+           1500 tokens per tool result. Does it hit the 200k limit?"
+
+Per round (1 user message + 30 tool calls):
+  1 user message:               ~100 tokens
+  30 tool results × 1,500:    45,000 tokens
+  30 assistant responses × 200: 6,000 tokens
+  Per round:                  ~51,100 tokens
+
+Running total (system prompt = 8k, headroom = 12k, available = 180k):
+  After round 1: 8,000 + 51,100  =  59,100 ✓
+  After round 2: 8,000 + 102,200 = 110,200 ✓
+  After round 3: 8,000 + 153,300 = 161,300 ✓
+  After round 4: 8,000 + 204,400 = 212,400 ✗ → breaks mid round 4
+
+→ Always do the math FIRST before proposing solutions.
+→ "Does it break?" is answered with numbers, not intuition.
+
+CONNECTIONS TO YOUR PROJECTS
+------------------------------
+Cascade AI: GCS offloading is direct context management.
+  Naive: 50k char search result → 37,500 tokens consumed
+  Your approach: store to GCS, inject reference → 15 tokens
+  Result: agent can run 100 tool calls instead of 3
+
+Outreach Engine: Each listing round + 30 tool calls ~51k tokens.
+  5 user prompts × 51k = 255k → exceeds 200k window.
+  Breaks during round 4. Needs trimming.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: TEMPERATURE, TOP-P, TOP-K
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DEFINITION
+----------
+Three knobs that control how an LLM picks its next token. They don't change what
+the model knows — they change how confidently or randomly it acts on what it knows.
+
+ANALOGY
+-------
+You're in an exam, narrowed down to three options: A (70% sure), B (20%), C (10%).
+
+Temperature = 0   → forced to always pick most confident answer. Always A. Robotic.
+Temperature = 1   → spin a weighted wheel. A: 70%, B: 20%, C: 10%. Natural.
+Temperature = 2   → drunk during exam. Wheel nearly flat. Wrong answers come up often.
+
+Top-p = 0.9       → only consider answers that together account for 90% confidence.
+                    If you're 95% sure about A alone → just pick A.
+                    If split 40/35/25 → all three are in play. Adapts to certainty.
+
+Top-k = 2         → only consider top 2 options regardless of probability distribution.
+                    Blunt. Inflexible. Less used than top-p in production.
+
+THE MECHANICS — WHAT ACTUALLY HAPPENS
+---------------------------------------
+Model produces logits (raw scores) for every token in vocabulary:
+  raw_logits = model.forward(input_tokens)  # shape: [vocab_size]
+
+Temperature divides logits before softmax:
+  probs = softmax(logits / temperature)
+
+  Low temp (0.1):  logit differences AMPLIFIED → top token dominates
+  Temp = 1:        no change, default distribution
+  High temp (2.0): logit differences COMPRESSED → everything more equal
+
+import torch
+import torch.nn.functional as F
+
+logits = torch.tensor([2.0, 1.0, 0.5, 0.1, -1.0])
+
+# T=0.1 → almost deterministic
+softmax(logits / 0.1) → [0.9987, 0.0012, 0.0001, 0.0000, 0.0000]
+
+# T=1.0 → natural distribution
+softmax(logits / 1.0) → [0.5765, 0.2120, 0.1285, 0.0430, 0.0159]
+
+# T=2.0 → flat, random
+softmax(logits / 2.0) → [0.3955, 0.2393, 0.1807, 0.1228, 0.0617]
+
+TOP-P (NUCLEUS SAMPLING)
+------------------------
+Sort tokens by probability (highest first).
+Take tokens from the top until cumulative sum exceeds p.
+Sample ONLY from those tokens (the "nucleus").
+
+probs = [0.50, 0.30, 0.10, 0.07, 0.03]  # top-p = 0.9
+
+Token 0: cumsum 0.50 → keep
+Token 1: cumsum 0.80 → keep
+Token 2: cumsum 0.90 → keep (boundary)
+Token 3: cumsum 0.97 → EXCLUDE
+Token 4: cumsum 1.00 → EXCLUDE
+
+Nucleus = tokens 0, 1, 2. Sample from these only.
+
+WHY TOP-P BEATS TOP-K FOR AGENTS
+----------------------------------
+Top-k = 50 always samples from 50 tokens.
+  Even if model is 99% sure about one token, 49 low-probability tokens stay in play.
+  Artificially injecting randomness the model doesn't want.
+
+Top-p adapts:
+  Model confident (one token dominates) → nucleus shrinks to 1-2 tokens
+  Model uncertain → nucleus expands to include more options
+  Respects the model's own confidence. Doesn't override it.
+
+THE MOST IMPORTANT PRODUCTION PATTERN: TWO-STAGE TEMPERATURE
+--------------------------------------------------------------
+An agent does two fundamentally different things:
+  1. DECIDES what action to take  → tool selection, argument generation
+  2. GENERATES natural language   → explains results to users
+
+These need completely different temperature settings.
+
+STAGE 1 — Tool selection: temperature=0, top_p=0.1
+  Why: correct tool call is not creative. There's a right answer.
+  Randomness here = hallucinated tool names, wrong arguments, broken JSON.
+  At temp=1: 3% of calls generate "web_Search" instead of "web_search" → crash.
+
+STAGE 2 — Summary generation: temperature=0.3-0.7 (domain-dependent)
+  Why: natural language needs variation to not sound robotic.
+  temp=0 here = same sentence structure every time = users notice.
+
+TEMPERATURE BY DOMAIN:
+  Legal/Medical/Finance: 0.2  (rigid terminology, low variation tolerated)
+  General:               0.4  (natural prose)
+  Email/Creative:        0.6  (variation is a feature)
+
+FULL IMPLEMENTATION
+--------------------
+import anthropic
+client = anthropic.Anthropic()
+
+def select_tool(messages: list, tools: list):
+    """Deterministic tool selection. Never random."""
+    return client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=512,    # tool calls are short JSON blobs
+        temperature=0,     # deterministic
+        top_p=0.1,         # belt-and-suspenders safety net
+        tools=tools,
+        messages=messages,
+    )
+
+def generate_summary(messages: list, domain: str = "general") -> str:
+    """Natural language generation. Domain-calibrated temperature."""
+    temperature_by_domain = {
+        "legal":   0.2,
+        "finance": 0.2,
+        "medical": 0.2,
+        "general": 0.4,
+        "email":   0.6,
+    }
+    return client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=2048,
+        temperature=temperature_by_domain.get(domain, 0.4),
+        top_p=0.9,    # wide nucleus OK for natural language
+        messages=messages + [{"role": "user", "content": "Summarize findings."}],
+    ).content[0].text
+
+def run_agent(user_query: str, tools: list, domain: str = "general") -> str:
+    messages = [{"role": "user", "content": user_query}]
+
+    while True:
+        response = select_tool(messages, tools)  # temp=0
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            break
+
+        if response.stop_reason == "tool_use":
+            for block in response.content:
+                if block.type == "tool_use":
+                    result = execute_tool(block.name, block.input)
+                    messages.append({
+                        "role": "user",
+                        "content": [{"type": "tool_result",
+                                     "tool_use_id": block.id,
+                                     "content": str(result)}]
+                    })
+
+    return generate_summary(messages, domain=domain)  # temp=0.2-0.6
+
+FAILURE MODES
+--------------
+1. temp=1 ON TOOL CALLS
+   3% of calls: "web_Search", "websearch", "search_web" → string match fails → crash
+   300 failures/day at 10,000 daily requests. Silent in production.
+
+2. temp=0 ON CREATIVE TASKS
+   Cold emails all have identical sentence structure → recipients notice → reply rates drop
+
+3. top_p TOO HIGH FOR STRUCTURED OUTPUT
+   Meaningful probability on tokens that break JSON → parse failures at scale
+
+4. PROVIDER TEMPERATURE DIVERGENCE
+   temp=0.7 on GPT-4 ≠ temp=0.7 on Claude.
+   Different training → different distributions at same temperature.
+   Portkey routing across providers needs per-provider calibration.
+
+CONNECTIONS TO YOUR PROJECTS
+------------------------------
+Outreach Engine: Two distinct stages need different temperatures.
+  Scoring/routing  → temp=0 (is this listing relevant? binary decision)
+  Email generation → temp=0.5 (natural, personalized language)
+
+Cascade AI: Self-healing router decides which agent to call → temp=0.
+  Result summaries to users → temp=0.3-0.4.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: FINE-TUNING vs RAG vs PROMPTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DEFINITION
+----------
+Three ways to make an LLM useful for a specific domain. Each puts knowledge in a
+different place — the prompt, an external database, or the model's weights.
+
+ANALOGY
+-------
+You're a manager needing domain-specific customer support.
+
+PROMPTING  = Hire a brilliant generalist. Brief them every morning with a document.
+             They handle anything you tell them. Update the doc → instant behaviour
+             change. But every morning's briefing costs money. Long doc = they forget
+             the middle.
+
+RAG        = Same brilliant consultant + a filing cabinet of all your documents +
+             a fast search engine. They look things up in real time. Update the
+             cabinet without re-briefing them. New failure mode: what if they search
+             for the wrong thing and pull the wrong file?
+
+FINE-TUNING = Send a junior employee to a 3-month specialised training programme.
+              After graduation: they've internalised your domain's language, style,
+              reasoning patterns. No daily briefing needed. But if your product
+              pivots, their training is stale. Updating = back to school. Expensive.
+              Slow. Can't cite where they learned something.
+
+THE DECISION FRAMEWORK
+-----------------------
+Does knowledge change over time?
+  YES → RAG (always)
+  NO  → How much data do you have?
+           <500 examples  → Prompting
+           500+ examples  → Fine-tuning
+
+Is it about style or knowledge?
+  Style     → Fine-tuning
+  Knowledge → RAG
+
+The most important heuristic:
+  "If knowledge changes monthly → RAG.
+   If it changes daily → definitely RAG.
+   If it never changes → fine-tuning is on the table."
+
+PROMPTING IN DEPTH
+-------------------
+Everything the model needs lives in the prompt itself.
+
+response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    system="""You are a customer support agent for Portkey.ai.
+
+Portkey provides: LLM routing, semantic caching, observability, fallbacks.
+
+Always respond:
+1. Acknowledge the issue
+2. Explain technical cause
+3. Provide exact fix with code
+4. Link to docs
+
+Example:
+User: My API calls fail randomly
+Agent: This is typically provider partial outages. Add fallback config:
+[code example]. See: docs.portkey.ai/fallbacks""",
+    messages=[{"role": "user", "content": "Why is my Claude call slow?"}]
+)
+
+Token cost math at scale:
+  800 token system prompt × $0.003/1k × 100,000 req/day = $240/day
+  (before prompt caching)
+
+WHEN TO USE: Fast iteration, small knowledge base (<2000 tokens), low scale,
+             needs instant update capability.
+
+RAG IN DEPTH
+-------------
+Retrieve relevant chunks from external knowledge base at query time.
+Inject only what's relevant into the prompt.
+
+def embed(text: str) -> list[float]:
+    # Convert text to vector
+    ...
+
+def retrieve(query: str, top_k: int = 5) -> list[str]:
+    query_vector = embed(query)
+    results = qdrant_client.search(
+        collection_name="portkey_docs",
+        query_vector=query_vector,
+        limit=top_k
+    )
+    return [r.payload["text"] for r in results]
+
+def answer_with_rag(question: str) -> str:
+    chunks = retrieve(question)
+    context = "\n\n---\n\n".join(chunks)
+
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        system="Answer using only the provided context.",
+        messages=[{
+            "role": "user",
+            "content": f"Context:\n{context}\n\nQuestion: {question}"
+        }]
+    )
+    return response.content[0].text
+
+Token savings vs prompting:
+  Without RAG: 5,000 tokens (full docs) × every request
+  With RAG:      500 tokens (relevant chunks) × every request
+  Savings: 90% reduction in input tokens
+
+WHEN TO USE: Large knowledge base, knowledge changes frequently, need citability,
+             factual/retrievable information.
+
+Connections to your projects:
+  Cascade AI Firestore memory = RAG applied to user history
+  (retrieve relevant past interactions instead of storing everything in context)
+
+FINE-TUNING IN DEPTH
+---------------------
+Train the model's weights on domain-specific examples.
+Knowledge becomes part of the model itself.
+
+Training data format (JSONL):
+  {
+    "messages": [
+      {"role": "system", "content": "You are a Portkey support agent."},
+      {"role": "user", "content": "How do I add a fallback provider?"},
+      {"role": "assistant", "content": "Add a fallback key to your config..."}
+    ]
+  }
+  ... (repeat for 500-50,000 examples)
+
+from openai import OpenAI
+client = OpenAI()
+
+# Upload training data
+with open("training_data.jsonl", "rb") as f:
+    training_file = client.files.create(file=f, purpose="fine-tune")
+
+# Launch fine-tuning job
+job = client.fine_tuning.jobs.create(
+    training_file=training_file.id,
+    model="gpt-4o-mini",  # fine-tune cheaper model → saves cost
+    hyperparameters={"n_epochs": 3}
+)
+
+# Use fine-tuned model (no system prompt needed)
+response = client.chat.completions.create(
+    model=job.fine_tuned_model,  # "ft:gpt-4o-mini:company:abc123"
+    messages=[{"role": "user", "content": "How do I add a fallback?"}]
+    # model already knows the style and domain
+)
+
+Cost math:
+  Fine-tuning run: ~$2 (one-time)
+  Per-request savings (no system prompt needed):
+    Before: 800 tokens × $0.003/1k × 100k req/day = $240/day
+    After:    0 tokens × cost              = $0/day
+  Breakeven: pays for itself in hours at scale
+
+WHEN TO USE: 500+ high-quality examples, task needs specific output format,
+             adapting style/reasoning (NOT facts), stable knowledge, high scale.
+
+CRITICAL RULE — FINE-TUNE ON STYLE, NOT FACTS
+-----------------------------------------------
+WRONG: Fine-tune a medical model on drug dosages.
+  → Dosages change. Fine-tuned weights hold stale dosages.
+  → Model confidently overrides RAG-retrieved updated guidelines with training memory.
+  → Catastrophic in healthcare.
+
+RIGHT: Fine-tune on HOW to answer medical questions.
+  → How to structure the response
+  → How to hedge uncertainty ("consult your physician")
+  → How to format citation references
+  → FACTS come from RAG, STYLE comes from fine-tuning
+
+THE HYBRID — WHAT PRODUCTION SYSTEMS ACTUALLY LOOK LIKE
+---------------------------------------------------------
+  Fine-tuning → teaches style, format, domain reasoning patterns
+  RAG         → provides current, citable factual knowledge
+  Prompting   → short session-specific instructions only
+
+"I'd almost never choose between these. I'd combine them.
+ Fine-tune for style. RAG for knowledge. Short prompt for instructions.
+ That's what production systems actually look like."
+
+FAILURE MODES
+--------------
+PROMPTING fails when:
+  - System prompt exceeds ~2000 tokens → lost in the middle
+  - Knowledge changes daily → stale prompts
+  - Millions of requests → static prompt tokens become huge cost
+
+RAG fails when:
+  - Retrieval fails → wrong chunks → confident hallucinations
+  - Chunks too large → answer buried → model misses it
+  - Question requires synthesising across many documents → RAG gets fragments
+
+FINE-TUNING fails when:
+  - Knowledge changes → stale weights, confidently wrong
+  - <500 examples → overfitting, brittle model
+  - Need citability → fine-tuned model can't cite its source
+
+HYBRID fails when:
+  - Fine-tuned model's strong prior fights RAG retrieval
+  - Model trained on old facts ignores updated retrieved context
+  - Two compounding failure modes instead of one
+
+HEALTHCARE CASE STUDY (Scale AI interview question)
+----------------------------------------------------
+Scenario: 50,000 medical Q&A pairs, medication DB updates monthly,
+          need citations, 500,000 queries/day.
+
+Recommended: RAG + Fine-tuning
+  RAG:          owns all medication facts (monthly updates, citable)
+  Fine-tuning:  owns answer style (50k examples is exceptional — min is 500)
+                trains on: structure, hedging, citation format
+                does NOT train on any drug facts
+
+Why not prompting:
+  500,000 req/day × 3,000 token system prompt = 1.5 billion tokens/day
+  That's $4,500/day just in system prompt tokens. Eliminated.
+  Also: lost in the middle problem for clinical guidelines.
+
+Failure modes to design against:
+  1. RAG retrieval failure → hallucinated citation
+     Fix: RAGAS faithfulness scoring on held-out eval set
+  2. Fine-tuned prior overrides retrieved context
+     Fix: test explicitly with updated guidelines contradicting training data
+  3. Update lag (guidelines update day 1, RAG rebuilt day 5)
+     Fix: RAG index rebuilt within hours, monitoring alert if rebuild fails
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KEY INTERVIEW PATTERNS — MODULE 1
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ALWAYS DO THE MATH FIRST
+  Don't say "it might hit the context limit." Say:
+  "30 tool calls × 1,500 tokens = 45k. Available = 180k. Won't hit the limit."
+  Numbers kill ambiguity. Interviewers reward precision.
+
+THE SMART EXTRA INSIGHT
+  After the correct answer, add the non-obvious thing:
+  - "It won't hit the limit, but I'd still implement caching because at 10k
+    requests/day the prompt token cost adds up."
+  - "Fine-tuning pays for itself in hours at the given scale."
+  This is what separates good answers from great ones.
+
+TRADEOFFS ARE MANDATORY
+  Every solution introduces tradeoffs.
+  Two-stage temperature → 2x API calls → 2x latency.
+  RAG → retrieval failure mode.
+  Fine-tuning → knowledge staleness.
+  If you propose a fix without naming what you're giving up, it's incomplete.
+
+THE COMBINATION ANSWER
+  For any "which approach?" question:
+  Default answer is always a combination. Name what each component does.
+  "Fine-tuning for style. RAG for knowledge. Short prompt for instructions."
+
+COMPANY-SPECIFIC FRAMING
+  Portkey:  cost optimization, caching, provider routing, latency
+  Langfuse: traceability, eval pipelines, prompt versioning
+  Arize:    production monitoring, drift detection
+  Scale AI: data quality, training data, annotation pipelines
+  Palantir: enterprise reliability, structured data + LLM integration
+
+================================================================================
+STATUS: Module 1 COMPLETE
+NEXT:   Module 2 — Production RAG
+        (chunking, hybrid retrieval, reranking, RAGAS metrics deep dive)
+================================================================================
