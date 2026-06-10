@@ -1,224 +1,105 @@
 ================================================================================
-MODULE — FASTAPI + PYDANTIC (PRODUCTION)
-AI/ML Study Notes — Rudra Dudhat
-Date: 2026-06-09
+FASTAPI + PYDANTIC — QUICK REFERENCE
 ================================================================================
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PYDANTIC
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--------
+Type hints = documentation only. Pydantic = runtime enforcement.
+Invalid data → ValidationError at the boundary, not deep in your code.
 
-WHAT IT SOLVES
---------------
-Python is dynamically typed — type hints are documentation, not enforcement.
-Pydantic makes type hints enforce at runtime. Invalid data raises ValidationError
-at the boundary, not 10 function calls deep.
+Coercion: "20" → 20 (str to int). Missing field → error. Wrong type → error.
 
-Type hints alone:
-  def f(age: int): ...
-  f("banana")  # works fine, no error
+Field():
+  min_length, max_length       →  string constraints
+  gt, lt, ge, le               →  number constraints (>, <, >=, <=)
+  default=value                →  optional field
+  default_factory=list         →  mutable defaults (NEVER default=[])
+  exclude=True                 →  hide from serialization (API keys, secrets)
+  alias="camelCase"            →  different name in JSON vs Python
+  description="..."            →  LLM reads this for tool/function calling
 
-Pydantic:
-  class User(BaseModel):
-      age: int
-  User(age="banana")  # ValidationError immediately
+MUTABLE DEFAULT BUG (always comes up)
+  WRONG:   tools: list[str] = Field(default=[])   # shared across all instances
+  CORRECT: tools: list[str] = Field(default_factory=list)
+  Same for dicts: default_factory=dict
 
-CORE BEHAVIORS
---------------
-  Coercion:  "20" (str) → 20 (int) automatically where possible
-  Missing:   required field not provided → ValidationError
-  Invalid:   "banana" for int → ValidationError with clear message
+@field_validator("field_name")
+@classmethod
+def validate(cls, v):
+    if bad: raise ValueError("msg")
+    return v   # must return value. runs after type check.
 
-FIELD()
--------
-  Adds constraints and metadata beyond just the type.
+@model_validator(mode="after")          # NO @classmethod here
+def cross_check(self) -> "Model":
+    if self.end <= self.start: raise ValueError("...")
+    return self   # must return self
 
-  name: str = Field(min_length=2, max_length=50)
-  age: int = Field(gt=0, lt=120)        # gt=greater than, lt=less than
-  score: float = Field(ge=0, le=100)    # ge=≥, le=≤
-  email: str = Field(default="")        # optional with default
-  api_key: str = Field(exclude=True)    # hide from serialization/logs
-  product_id: int = Field(alias="productId")  # different name in JSON vs Python
-  description: str = Field(description="...")  # LLM reads this for tool use
+RULE: Field constraints → simple rules. field_validator → one field logic.
+      model_validator → rules needing multiple fields.
 
-MUTABLE DEFAULT BUG (critical)
---------------------------------
-  # WRONG — all instances share the same list
-  tools: list[str] = Field(default=[])
+LLM USE: Field(description="...") = what LLM reads to fill the field.
+         Pydantic validates LLM output before your code touches it.
 
-  # CORRECT — new list created per instance
-  tools: list[str] = Field(default_factory=list)
-
-  Same for dicts: default_factory=dict (never default={})
-
-@field_validator — single field logic
---------------------------------------
-  @field_validator("email")
-  @classmethod
-  def validate_email(cls, v: str) -> str:
-      if "@" not in v:
-          raise ValueError("invalid email")
-      return v.lower()   # can transform while validating
-
-  - Runs AFTER type check
-  - Must return the final value (can transform)
-  - Use for: format validation, normalization, domain rules
-
-@model_validator — cross-field logic
---------------------------------------
-  @model_validator(mode="after")
-  def check_dates(self) -> "MyModel":
-      if self.end_date <= self.start_date:
-          raise ValueError("end must be after start")
-      return self   # must return self
-
-  - mode="after": runs after all fields validated, use self
-  - NO @classmethod with mode="after"
-  - Must return self
-
-RULE: Field constraints → simple rules. @field_validator → logic on one field.
-      @model_validator → rules involving multiple fields together.
-
-LLM CONNECTION
---------------
-  Field(description="...") is what LLMs read during tool/function calling.
-  Pydantic validates LLM structured output before your code uses it.
-  If LLM returns invalid value → ValidationError caught immediately.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DECORATORS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+----------
+Function that wraps another function to add behavior.
+@decorator = shorthand for func = decorator(func)
 
-WHAT THEY ARE
--------------
-  Functions are objects in Python. A decorator is a function that wraps another
-  function to add behavior without modifying it.
-
-  @logger
-  def add(a, b): ...
-  # same as: add = logger(add)
-
-STRUCTURE
----------
   def decorator(func):
-      def wrapper(*args, **kwargs):    # accept any arguments
-          # before
-          result = func(*args, **kwargs)  # call original
-          # after
+      def wrapper(*args, **kwargs):
+          result = func(*args, **kwargs)
           return result
-      return wrapper   # MUST return wrapper
+      return wrapper   # must return wrapper
 
-  *args = positional args as tuple
-  **kwargs = keyword args as dict
+Decorator factory (takes args): @repeat(3) → repeat(3) returns decorator first.
+Every level must return: outer→decorator, decorator→wrapper, wrapper→result.
+Missing any return → None → TypeError when called.
 
-DECORATOR FACTORY (takes arguments)
--------------------------------------
-  def repeat(n):           # factory — takes config
-      def decorator(func): # decorator — takes function
-          def wrapper(*args, **kwargs):
-              for _ in range(n):
-                  func(*args, **kwargs)
-          return wrapper   # MUST return wrapper
-      return decorator     # MUST return decorator
+FASTAPI DEPENDENCY INJECTION
+-----------------------------
+Shared logic (auth, DB) shouldn't be repeated in every endpoint. Use Depends().
 
-  @repeat(3)    # repeat(3) runs first → returns decorator → wraps function
-  def say(): ...
-
-EVERY LEVEL MUST RETURN
-------------------------
-  outer(arg)        →  must return decorator
-  decorator(func)   →  must return wrapper
-  wrapper(...)      →  must return func(...)
-  Missing any return → that level becomes None → TypeError when called
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FASTAPI — DEPENDENCY INJECTION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-WHAT IT SOLVES
---------------
-  Shared logic (auth, DB sessions, config) repeated in every endpoint.
-  Dependency injection: declare what you need, FastAPI provides it.
-
-BASIC PATTERN
--------------
-  async def get_current_user(token: str = Header()):
-      user = decode_jwt(token)
-      if not user:
-          raise HTTPException(401, "invalid token")
+  async def get_current_user(auth: str = Header()):
+      user = decode_jwt(auth[7:])
+      if not user: raise HTTPException(401)
       return user
 
-  @app.get("/profile")
-  async def profile(user = Depends(get_current_user)):
-      return user   # FastAPI ran get_current_user, injected result
+  @app.get("/data")
+  async def handler(user = Depends(get_current_user)):
+      ...   # user is injected, no repetition
 
-COMPOSABLE LAYERS
------------------
-  async def get_token(authorization: str = Header()): ...
+Composable: deps can depend on other deps. Chain stops at first failure.
 
-  async def get_current_user(token = Depends(get_token)): ...
-
-  async def require_admin(user = Depends(get_current_user)): ...
-
-  @app.delete("/users/{id}")
-  async def delete_user(admin = Depends(require_admin)): ...
-
-  FastAPI builds the full chain. Any layer fails → chain stops → error returned.
-
-yield IN DEPENDENCIES (cleanup pattern)
------------------------------------------
+yield in dependency = cleanup after request:
   async def get_db():
       async with AsyncSession(engine) as session:
-          yield session    # give to endpoint
-          # runs after endpoint finishes — cleanup here
+          yield session   # endpoint runs here
+          # session closed automatically after
 
-  One session per request. Session closes after request completes, even on error.
+BackgroundTasks = fire-and-forget after response sent:
+  background_tasks.add_task(log_to_langfuse, user.id, prompt, response)
+  return {"response": response}   # user gets this immediately
 
-BACKGROUND TASKS
-----------------
-  async def send_email(to: str, body: str): ...
+NEVER pass yield-based deps (DB sessions) into background tasks.
+They close after the response. Task runs after. Use → closed session → crash.
+Fix: open a fresh session inside the background task.
 
-  @app.post("/register")
-  async def register(
-      data: RegisterRequest,
-      background_tasks: BackgroundTasks    # FastAPI injects automatically
-  ):
-      user = create_user(data)
-      background_tasks.add_task(send_email, user.email, "Welcome!")
-      return {"id": user.id}   # returned immediately, email sends after
+REQUEST LIFECYCLE
+-----------------
+1. Pydantic validates request body
+2. Depends chain runs (bottom-up)
+3. Endpoint runs
+4. Response sent to user
+5. Background tasks run
+6. yield-dep cleanup runs (DB closed etc.)
 
-  User gets response instantly. Background task runs after. Never wait for it.
-
-FULL REQUEST LIFECYCLE
------------------------
-  1. Request arrives → Pydantic validates body
-  2. FastAPI resolves Depends chain (bottom-up)
-  3. Endpoint runs with all dependencies injected
-  4. Response sent to user
-  5. Background tasks execute
-  6. yield-based dependency cleanup runs (DB session closed etc.)
-
-KEY PATTERNS
-------------
-  Depends()          →  inject shared logic — auth, DB, config
-  yield in dep       →  cleanup after request — close DB, release locks
-  BackgroundTasks    →  fire-and-forget — logging, emails, pipelines
-  lifespan           →  app-level setup/teardown — shared client, DB engine
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-COMMON BUGS — QUICK REFERENCE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  BUG                                      FIX
-  ──────────────────────────────────────────────────────────────────────────
-  default=[] or default={}                 default_factory=list / dict
-  @classmethod on model_validator after    remove @classmethod
-  return missing in decorator              add return wrapper / return decorator
-  validator not returning value            always return v (or self)
-  field defined but no Field() constraints just add Field(gt=0) etc — simpler
-  HTTPException inside Depends             correct — chain stops, error returned
+BUGS CHEATSHEET
+---------------
+  default=[] or {}              →  default_factory=list / dict
+  @classmethod on model_validator after  →  remove it
+  Missing return in decorator   →  add return wrapper / return decorator
+  validator not returning v     →  always return v or self
+  Passing DB session to bg task →  open fresh session inside task
+  No raise_for_status()         →  add after every HTTP call
 
 ================================================================================

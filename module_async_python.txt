@@ -1,439 +1,95 @@
 ================================================================================
-MODULE — PRODUCTION ASYNC PYTHON
-AI/ML Study Notes — Rudra Dudhat
-Date: 2026-06-09
+ASYNC PYTHON — QUICK REFERENCE
 ================================================================================
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEPT 1: WHY ASYNC EXISTS — THE BLOCKING I/O PROBLEM
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-THE PROBLEM
------------
-Normal Python (synchronous) code runs line by line. When it hits a network
-call, DB query, or file read — it STOPS and waits. CPU is idle. Thread is
-frozen. No other work happens.
-
-3 requests × 200ms each = 600ms total. Sequential. Wasteful.
-
-THE INSIGHT
------------
-Waiting for I/O is NOT the same as doing work. The CPU sends a signal, then
-the network card / disk / DB does the actual work. Your CPU could be doing
-other things during that wait.
-
-THE RULE
---------
-  I/O-bound work (network, disk, DB)  →  async / await
-  CPU-bound work (math, ML inference) →  multiprocessing
-  NOTE: Python threads don't give true parallelism due to the GIL
-        (Global Interpreter Lock — only one thread runs Python bytecode at once)
-
-INTERVIEW LINE
---------------
-"Async helps when the bottleneck is waiting for external systems, not when
-the CPU itself is under load. For CPU-heavy work, I'd use multiprocessing
-for separate processes with independent memory."
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEPT 2: THE EVENT LOOP
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-WHAT IT IS
-----------
-A single-threaded loop that manages all coroutines. It runs on one thread.
-It decides which coroutine runs next.
-
-HOW IT WORKS
-------------
-  1. Start coroutine A → hits await → SUSPENDS
-  2. Start coroutine B → hits await → SUSPENDS
-  3. Start coroutine C → hits await → SUSPENDS
-  4. When A's I/O finishes → RESUME A
-  5. When B's I/O finishes → RESUME B
-  ...and so on
-
-KEY DISTINCTION
----------------
-  "Only one coroutine runs at any instant."
-  "But many coroutines can be SUSPENDED (waiting for I/O) simultaneously."
-
-  Running ≠ In-flight. 1000 users = 1000 coroutines all suspended at their
-  await points. Event loop bounces between them as I/O completes.
-  One thread. Zero threads needed per user.
-
-WHY THIS SCALES
----------------
-  A thread costs ~1-8MB of stack memory + OS scheduling overhead.
-  A suspended coroutine is just a Python object with saved state. A few KB.
-  1000 coroutines = tiny. 1000 threads = a lot.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEPT 3: COROUTINES — async / await
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-KEYWORDS
---------
-  async def  →  defines a coroutine (a function that can pause/resume)
-  await      →  the pause point — suspends HERE, gives control to event loop,
-                resumes when the awaited thing is done
-
-RULE: You can only await something that is itself a coroutine (or awaitable).
-      You cannot await a regular blocking function.
-
-THE TRAP: BLOCKING INSIDE async def
--------------------------------------
-  async def handler():
-      time.sleep(5)          # ← BLOCKS THE ENTIRE EVENT LOOP
-      requests.get(url)      # ← ALSO BLOCKS THE ENTIRE EVENT LOOP
-
-  These are regular blocking calls with no await. The event loop freezes.
-  Every other user's request is stuck for those 5 seconds.
-
-FASTAPI HANDLER RULES
-----------------------
-  async def + await httpx    →  correct, event loop free during I/O
-  async def + requests.get   →  WRONG, blocks event loop (worst case)
-  def (plain sync)           →  FastAPI runs it in thread pool automatically
-                                (safe for blocking code, just not async)
-
-  The dangerous case: async def + blocking code inside.
-  You told FastAPI "I'm async" but then blocked the thread anyway.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEPT 4: httpx vs requests + HTTP CLIENTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-WHY NOT requests
-----------------
-  requests uses blocking sockets (built 2011, pre-async).
-  You cannot await it. It freezes the event loop when used inside async def.
-
-WHY httpx
+WHY ASYNC
 ---------
-  httpx uses non-blocking sockets. It registers with the event loop.
-  await client.get(url) genuinely suspends. Event loop free during wait.
+Blocking code waits for I/O (network/DB/disk) doing nothing.
+Async suspends at await, lets event loop run other coroutines, resumes when done.
+I/O-bound → async. CPU-bound → multiprocessing. Threads useless (GIL).
 
-WHAT IS A CLIENT
-----------------
-  Without a client: every request does DNS + TCP handshake + TLS handshake
-  before a single byte of your actual request is sent. 100-300ms overhead
-  per request. Every time.
+EVENT LOOP
+----------
+Single thread. Manages all coroutines.
+Only one runs at any instant — but hundreds can be SUSPENDED simultaneously.
+1000 users = 1000 coroutines waiting. One thread. No threads per user.
+Thread = 1-8MB. Suspended coroutine = few KB. This is why it scales.
 
-  With a client: connections are established once and REUSED (connection pool).
-  Second request to same server: no handshake. Just sends data.
+COROUTINES
+----------
+async def  →  function that can pause/resume
+await      →  pause point. gives control to event loop. resumes when done.
 
-  Client also manages: timeouts, default headers, base URL, cookies.
+TRAP — blocking inside async def:
+  time.sleep(5)       →  freezes entire event loop
+  requests.get(url)   →  same problem
+  plain def handler   →  FastAPI moves it to thread pool (safe)
 
-SHARED CLIENT PATTERN (production)
-------------------------------------
-  from contextlib import asynccontextmanager
-  from fastapi import FastAPI
-  import httpx
+HTTPX + SHARED CLIENT
+---------------------
+requests = blocking sockets. Never use in async def.
+httpx = non-blocking. Always use with await.
+
+New client per request = new TCP+TLS handshake every time. Wasteful.
+Shared client via lifespan = connections reused. Fast.
 
   @asynccontextmanager
   async def lifespan(app):
       app.state.client = httpx.AsyncClient(timeout=30.0)
-      yield                          # app runs here
+      yield
       await app.state.client.aclose()
 
-  app = FastAPI(lifespan=lifespan)
-
-  @app.get("/data")
-  async def handler(request: Request):
-      client = request.app.state.client   # reuse shared client
-      response = await client.get(url)
-      return response.json()
-
-  WHY: One client = one connection pool = connections stay warm.
-       New client per request = new pool every time = zero benefit.
-
-async with httpx.AsyncClient() as client — the async with ensures
-the connection is properly closed even if an exception is thrown.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEPT 5: HTTP HEADERS + BEARER TOKENS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-HEADERS
--------
-  Key-value metadata sent with every HTTP request/response.
-  Like the label on a package — describes the contents before you open it.
-
-  Common ones:
-    Content-Type: application/json    →  "my body is JSON"
-    Authorization: Bearer <token>     →  "here's my identity proof"
-    Accept: application/json          →  "I want JSON back"
-
-BEARER TOKEN
-------------
-  Bearer = "whoever holds this token is authenticated."
-  Format: Authorization: Bearer <token>
-
-  Token types:
-    API Key   →  static secret the service gives you (Anthropic, OpenAI)
-    JWT       →  dynamic token from login, expires after ~1 hour
-
-  NEVER hardcode tokens. Always use environment variables:
-    headers={"Authorization": f"Bearer {os.environ['API_KEY']}"}
-
-  Hardcoded key pushed to GitHub = scraped by bots in minutes = bill arrives.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEPT 6: GENERATORS — yield
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-THE PROBLEM WITH return
------------------------
-  return computes everything upfront and hands it all back at once.
-  10 million items = 10 million things in RAM before you use a single one.
-
-WHAT yield DOES
----------------
-  Turns a function into a generator — produces values ONE AT A TIME, on demand.
-  Function PAUSES at yield, remembers its state, resumes on next call.
-
-  def gen():
-      yield 1    # pause here, give 1 to caller
-      yield 2    # resume here on next call
-      yield 3
-
-  g = gen()
-  next(g)  →  1  (runs to first yield, pauses)
-  next(g)  →  2  (resumes, runs to next yield, pauses)
-  next(g)  →  3
-  next(g)  →  StopIteration
-
-KEY POINT: calling gen() does NOT run the function.
-           It returns a generator object. Nothing runs until next().
-
-CRITICAL: The function's local variables (x, i, etc.) survive between
-          next() calls. State is preserved. This is unlike regular functions.
-
-FOR LOOP = next() under the hood
----------------------------------
-  for item in my_generator():  →  Python calls next() until StopIteration
-
-MEMORY BENEFIT
---------------
-  sum([x**2 for x in range(10_000_000)])   # 10M integers in RAM
-  sum(x**2 for x in range(10_000_000))     # generator: one number at a time
-
-  Same result. Generator uses almost zero extra memory.
-
-CONNECTION TO ASYNC
--------------------
-  Coroutines ARE built on generators internally.
-  await = yielding control back to the event loop.
-  async def is a generator that yields to the event loop instead of a caller.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEPT 7: ASYNC GENERATORS — streaming
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-WHAT IT IS
+GENERATORS
 ----------
-  A function that is BOTH a coroutine AND a generator.
-  Can await I/O and yield values.
+yield = pause, give value, resume on next().
+Calling gen() returns generator object — nothing runs until next().
+State (variables) preserved between next() calls.
+Memory benefit: process one item at a time, not all in RAM.
+async def is built on generators. await = yield to event loop.
 
-  async def stream_chunks(url):
-      async with httpx.AsyncClient() as client:
-          async with client.stream("POST", url) as response:
-              async for chunk in response.aiter_lines():
-                  yield chunk    # produce one chunk, pause
+ASYNC GENERATORS
+----------------
+async def + yield = streams data as it arrives.
+client.post() = waits for full response. client.stream() = chunks as they arrive.
+Used for LLM token streaming → user sees response word by word.
 
-  async for chunk in stream_chunks(url):   # async for calls __anext__()
-      print(chunk)
+GATHER vs TASKGROUP vs QUEUE
+-----------------------------
+gather(return_exceptions=True)  →  fixed tasks, want all results, handle failures
+TaskGroup                       →  fixed tasks, one failure cancels ALL (atomic)
+Queue + N workers               →  large workload, controlled concurrency
 
-client.stream() vs client.post()
-----------------------------------
-  client.post()    →  waits for ENTIRE response body before returning
-                      full response buffered in RAM
+gather default (no return_exceptions): first exception raised, others orphaned.
+One None sentinel per worker (not one total) for shutdown.
+task_done() required if using queue.join().
 
-  client.stream()  →  returns immediately after headers arrive
-                      body comes in chunks over time, you read as it arrives
-                      connection stays open → must use async with to close cleanly
-
-LLM STREAMING (real use)
--------------------------
-  Anthropic/OpenAI send tokens as Server-Sent Events (SSE) as they generate.
-  async generator reads each chunk → yields it → FastAPI StreamingResponse
-  pushes it to browser immediately.
-
-  User sees response word by word instead of waiting for all 800 tokens.
-  Without streaming: wait 10s then see everything at once.
-  With streaming: first token in ~200ms, rest appear progressively.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEPT 8: gather vs TaskGroup vs Queue
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-QUICK DECISION TABLE
----------------------
-  Small fixed set of tasks, want all results          →  gather(return_exceptions=True)
-  Small fixed set, one failure should cancel rest     →  TaskGroup
-  Large/unknown stream of work, controlled concurrency →  Queue
-
-━━━━━━━━━━━━━
-
-gather
-------
-  results = await asyncio.gather(t1, t2, t3)
-
-  Default (no return_exceptions):
-    First exception is RAISED immediately.
-    Other tasks become ORPHANS — still running, results silently discarded.
-
-  With return_exceptions=True:
-    All tasks run to completion.
-    Exceptions returned as values in the results list.
-    Check with: isinstance(result, Exception)
-
-  USE: Calling 3-5 independent APIs where you want all results.
-
-━━━━━━━━━━━━━
-
-TaskGroup (Python 3.11+)
-------------------------
-  async with asyncio.TaskGroup() as tg:
-      t1 = tg.create_task(fetch(1))
-      t2 = tg.create_task(fetch(2))   # if this raises...
-      t3 = tg.create_task(fetch(3))   # ...this gets CANCELLED
-
-  One failure → all remaining tasks cancelled → exception raised.
-  No orphans. Clean shutdown.
-
-  USE: All tasks must succeed together (charge card + update DB + send receipt).
-       If one fails, cancel everything — partial success is worse than total failure.
-
-━━━━━━━━━━━━━
-
-Queue
------
-  queue = asyncio.Queue(maxsize=100)
-
-  Producer puts items in. N workers pull items out and process them.
-  At any moment, exactly N items in-flight. Never more.
-
-  maxsize = backpressure: if queue is full, producer blocks until a worker
-  frees space. Prevents runaway memory growth.
-
-  Sentinel pattern: put None (one per worker) to signal shutdown.
-    if item is None:
-        await queue.put(None)   # pass sentinel to next worker
-        break
-
-  task_done() + join(): track when ALL items have been fully processed.
-    queue.task_done()  → call after processing each item
-    await queue.join() → blocks until all task_done() calls match put() calls
-    Missing task_done() → join() waits forever
-
-  USE: 10,000 URLs to scrape. 50 workers. Never fire all 10k at once.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONCEPT 9: TIMEOUTS, CANCELLATION, RETRY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-TIMEOUTS
---------
-  Without timeout: if a server never responds, coroutine hangs forever.
-
-  # Python 3.11+ (preferred)
-  async with asyncio.timeout(10):
+TIMEOUTS + RETRY
+----------------
+  async with asyncio.timeout(10):   # cancel if no response in 10s
       response = await client.get(url)
+      response.raise_for_status()   # raise on 4xx/5xx
 
-  # Older Python
-  response = await asyncio.wait_for(client.get(url), timeout=10.0)
+  @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+  Retry: 5xx, timeout, network errors. Don't retry: 404, 403, bad input.
+  Failed after all retries → dead letter queue. Never silently drop.
 
-  On timeout: TimeoutError is raised, inner coroutine is CANCELLED.
+BUGS CHEATSHEET
+---------------
+  time.sleep() in async def          →  asyncio.sleep()
+  requests.get() in async def        →  await httpx_client.get()
+  New client per request             →  shared client via lifespan
+  No timeout                         →  asyncio.timeout(n)
+  No raise_for_status()              →  add it after every HTTP call
+  gather() no return_exceptions      →  add return_exceptions=True
+  One None sentinel for N workers    →  one None per worker
+  Missing task_done()                →  add after every queue.get()
+  Background task uses yield-dep     →  open fresh resource inside task
 
-CANCELLATION
-------------
-  When cancelled, Python injects CancelledError at the await point.
-  If code uses async with / context managers properly → connection cleaned up.
-  If code has raw client without context manager → connection LEAKS.
-
-  Always use async with for anything that holds resources.
-
-RETRY WITH EXPONENTIAL BACKOFF (tenacity)
-------------------------------------------
-  from tenacity import retry, stop_after_attempt, wait_exponential
-
-  @retry(
-      stop=stop_after_attempt(3),            # 3 total attempts
-      wait=wait_exponential(min=1, max=10),  # wait 1s, 2s, 4s...
-      retry=retry_if_exception_type((asyncio.TimeoutError, httpx.HTTPStatusError))
-  )
-  async def fetch_with_retry(url):
-      async with asyncio.timeout(10):
-          response = await client.get(url)
-          response.raise_for_status()   # raises HTTPStatusError on 4xx/5xx
-          return response.json()
-
-  NOT everything should be retried:
-    Retry:   timeout, 5xx (server error), network error
-    Don't:   404 (doesn't exist), 403 (forbidden), bad input data
-
-DEAD LETTER QUEUE
------------------
-  After all retries fail — don't silently drop the item.
-  Put it in a dead_letter_queue with the error message.
-  At end of pipeline: write to file/DB. Rerun later. Know exactly what failed.
-
-  try:
-      result = await fetch_with_retry(url)
-      await output_queue.put(result)
-  except Exception as e:
-      await dead_letter_queue.put({"url": url, "error": str(e)})
-  finally:
-      input_queue.task_done()
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-COMMON PRODUCTION BUGS — QUICK REFERENCE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  BUG                                    FIX
-  ─────────────────────────────────────────────────────────────────────────────
-  time.sleep() inside async def          asyncio.sleep()
-  requests.get() inside async def        await httpx_client.get()
-  open() / file.read() inside async def  aiofiles or run_in_executor
-  New client created per request         Shared client via lifespan
-  No timeout on external calls           asyncio.timeout(n)
-  gather() without return_exceptions     gather(..., return_exceptions=True)
-  One None sentinel for N workers        One None per worker
-  Missing task_done()                    Add after every queue.get() + process
-  Hardcoded API keys                     os.environ['KEY']
-  Blocking CPU work in async def         run_in_executor or plain def handler
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-THE INTERVIEW ANSWER — ASYNC PYTHON IN 60 SECONDS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-"In a production system handling many concurrent users, blocking I/O is the
-bottleneck — each request waits for network/DB responses while the CPU is idle.
-
-Async Python solves this with coroutines: functions defined with async def
-that can pause at await points and let the event loop run other coroutines
-while they wait. The event loop is a single-threaded loop managing all
-coroutines — only one runs at any instant, but hundreds can be suspended
-simultaneously waiting for I/O. This gives you concurrency without threads.
-
-The key limitation: async only helps with I/O-bound work. For CPU-bound tasks
-like model inference, you need multiprocessing — the GIL prevents true thread
-parallelism in Python.
-
-In practice this means: use httpx not requests, share a single client across
-requests via FastAPI lifespan, always set timeouts, and never put blocking
-calls inside async def handlers."
+INTERVIEW LINE
+--------------
+"Async uses coroutines on a single event loop thread. When a coroutine hits
+await, it suspends and the event loop runs others. 1000 users = 1000 suspended
+coroutines, not 1000 threads. Only limitation: I/O-bound only — CPU work needs
+multiprocessing."
 
 ================================================================================

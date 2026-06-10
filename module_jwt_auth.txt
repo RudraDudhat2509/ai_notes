@@ -1,119 +1,70 @@
 ================================================================================
-MODULE — JWT AUTHENTICATION (PRODUCTION)
-AI/ML Study Notes — Rudra Dudhat
-Date: 2026-06-09
+JWT AUTH — QUICK REFERENCE
 ================================================================================
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WHY JWT EXISTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHY JWT
+-------
+Passwords every request → leaks. Sessions → server storage, doesn't scale.
+JWT = self-contained token. Server stores nothing. No DB lookup per request.
 
-  Basic auth (password every request) → password leaks on every call
-  Sessions → need server-side storage, doesn't scale horizontally
-  JWT → self-contained, server stores nothing, no DB lookup per request
+STRUCTURE
+---------
+header.payload.signature   (three base64 strings, dot-separated)
 
+Payload contains: user_id, role, exp (expiry timestamp), type (access/refresh)
+Signature = HMAC_SHA256(header + payload, SECRET_KEY)
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-JWT STRUCTURE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+JWT is SIGNED not ENCRYPTED. Anyone can decode payload. Never put secrets in it.
+Tamper with payload → signature mismatch → rejected.
 
-  header.payload.signature   (three base64 strings joined by dots)
+VERIFICATION (no DB needed)
+----------------------------
+Re-compute signature with SECRET_KEY. Matches → payload is genuine → read user_id.
 
-  Header:    {"alg": "HS256", "typ": "JWT"}
-  Payload:   {"user_id": 123, "role": "admin", "exp": 1700000000}
-  Signature: HMAC_SHA256(base64(header) + "." + base64(payload), SECRET_KEY)
+ACCESS + REFRESH TOKEN PATTERN
+-------------------------------
+Access token   →  15 min, used for every API call, NOT stored in DB
+Refresh token  →  7 days, stored in DB, only used to get new access tokens
 
-  JWT is SIGNED not ENCRYPTED.
-  Anyone can decode the payload — they just can't tamper with it.
-  NEVER put passwords, credit cards, or secrets in the payload.
+Ban user → delete refresh token from DB → locked out in ≤15 min
+No DB hit on every request. Only on token refresh (rare).
 
-HOW VERIFICATION WORKS (no DB needed)
---------------------------------------
-  1. Re-compute signature from header + payload using SECRET_KEY
-  2. If matches → payload is untampered → read user_id directly
-  3. If mismatch → rejected
-
-  Tamper with payload → signature won't match → rejected automatically.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ACCESS TOKEN + REFRESH TOKEN PATTERN
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Access token  — short-lived (15 min), used for every API call, NOT stored
-  Refresh token — long-lived (7 days), stored in DB, only used to get new access tokens
-
-  LOGIN:    server issues both → store refresh token in DB
-  API CALL: client sends access token → server verifies (no DB hit)
-  EXPIRE:   client sends refresh token → server checks DB → issues new access token
-  BAN USER: delete refresh token from DB → next refresh attempt fails → locked out in ≤15min
-
-  Invalidation speed: max 15 minutes
-  DB lookups per request: 0 (except token refresh, rare)
-
-INVALIDATION OPTIONS
---------------------
-  Short expiry (15min)        → 0 DB lookups, max 15min exposure
-  Access + refresh tokens     → 0 DB lookups per request, industry standard
-  Redis blacklist             → instant invalidation, but 1 Redis hit per request
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-INVALID vs EXPIRED — CRITICAL DISTINCTION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  ExpiredSignatureError  →  valid signature, exp timestamp passed
-                            recoverable → tell client to refresh
-  JWTError               →  bad signature, tampered, malformed
-                            not recoverable → force re-login
+INVALID vs EXPIRED — ALWAYS DISTINGUISH
+-----------------------------------------
+ExpiredSignatureError  →  valid token, just old  →  tell client to REFRESH
+JWTError               →  tampered/malformed     →  force RE-LOGIN
 
   from jose import jwt, JWTError, ExpiredSignatureError
 
-  def decode_token(token: str) -> dict:
-      try:
-          return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-      except ExpiredSignatureError:
-          raise HTTPException(401, "token expired, please refresh")
-      except JWTError:
-          raise HTTPException(401, "invalid token")
+  try:
+      payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+  except ExpiredSignatureError:
+      raise HTTPException(401, "token expired")   # client should refresh
+  except JWTError:
+      raise HTTPException(401, "invalid token")   # client should re-login
 
-  Catching both as JWTError → client can't tell whether to refresh or re-login.
-  Always distinguish them.
+Catching both as JWTError → client can't tell whether to refresh or re-login.
 
+ALWAYS CHECK TOKEN TYPE
+------------------------
+  if payload.get("type") != "access":
+      raise HTTPException(401, "invalid token type")
+  # prevents refresh tokens being used as access tokens
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IMPLEMENTATION PATTERN
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  SECRET_KEY = os.environ["SECRET_KEY"]   # never hardcode
-  ALGORITHM  = "HS256"
-
-  def create_access_token(user_id: int) -> str:
-      payload = {
-          "user_id": user_id,
-          "exp": datetime.utcnow() + timedelta(minutes=15),
-          "type": "access"
-      }
-      return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-
-  async def get_current_user(authorization: str = Header()):
-      token = authorization[7:]   # strip "Bearer "
-      payload = decode_token(token)
-      return payload["user_id"]
-
-  @app.get("/profile")
-  async def profile(user_id: int = Depends(get_current_user)):
-      return {"user_id": user_id}
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SECURITY RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--------------
+  SECRET_KEY         →  from os.environ, never hardcoded, 32+ random chars
+  ANTHROPIC_API_KEY  →  separate from SECRET_KEY (different things entirely)
+  Payload            →  only non-sensitive identifiers (user_id, role, exp)
+  exp                →  always set. tokens without expiry = valid forever
+  raise_for_status() →  always call after HTTP requests
 
-  SECRET_KEY must be long + random (32+ chars) — from env, never hardcoded
-  Never put sensitive data in payload — it's base64, not encrypted
-  Always set exp — tokens without expiry are valid forever
-  Distinguish ExpiredSignatureError from JWTError — different client actions
-  Check token type — access token ≠ refresh token, validate the "type" claim
+LEAKED KEY RESPONSE
+--------------------
+1. Rotate key immediately (before touching git)
+2. git filter-repo to remove from history
+3. Force push
+4. Add to .gitignore
+5. Use .env pattern going forward
 
 ================================================================================
