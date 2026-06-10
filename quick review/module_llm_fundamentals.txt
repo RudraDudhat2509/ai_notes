@@ -1,0 +1,105 @@
+================================================================================
+LLM FUNDAMENTALS — QUICK REFERENCE
+================================================================================
+
+CONTEXT WINDOWS
+---------------
+Total tokens the LLM can see at once. No memory outside it. Silently degrades
+when full — doesn't warn you. Lost-in-the-middle: attends to start + end,
+ignores middle. Put critical instructions at TOP of system prompt.
+
+KV Cache: stable system prompt = cache it = ~90% cost reduction on cached tokens.
+Structure: [STABLE system prompt] → cache | [DYNAMIC messages] → fresh each time
+
+Token budget math:
+  30 tool calls × 1500 tokens = 45k. Available = 180k. Do the math before assuming.
+
+Failure modes:
+  System prompt eviction  →  trimming drops messages[0]. Agent loses all instructions.
+  Context poisoning       →  attacker sends 50k doc, pushes safety constraints out.
+  Lost in middle in RAG   →  answer at chunk 5 of 10. Model ignores it. Fix: rerank.
+
+TRADEOFFS: Large context ≠ better. Quality degrades at extremes. Cost scales linearly.
+           Caching pays for itself fast at scale ($150/day → $15/day at 10k req/day).
+
+TEMPERATURE / TOP-P / TOP-K
+-----------------------------
+Temperature = how random. Divides logits before softmax.
+  0   → always most confident token. Robotic. Use for tool calls.
+  0.7 → natural variation. Use for prose.
+  2.0 → nearly random. Avoid.
+
+Top-p = nucleus sampling. Include tokens until cumulative prob reaches p.
+  Adapts to model confidence. p=0.9 on confident model → tiny nucleus.
+  Better than top-k which always samples from k tokens regardless.
+
+Top-k = fixed k tokens only. Blunt. Less used.
+
+TWO-STAGE TEMPERATURE (production pattern):
+  Tool selection   → temp=0, top_p=0.1  (deterministic, right answer exists)
+  User-facing text → temp=0.3-0.7       (natural variation)
+  temp=1 on tool calls = hallucinated tool names = silent crashes in prod.
+
+By domain: legal/medical/finance=0.2, general=0.4, email/creative=0.6
+
+TRADEOFFS: temp=0 on creative → robotic output. temp=1 on structured → parse failures.
+           Provider divergence: temp=0.7 on Claude ≠ temp=0.7 on GPT-4.
+
+FINE-TUNING vs RAG vs PROMPTING
+---------------------------------
+Prompting  = brief generalist every request. Instant updates. High token cost at scale.
+RAG        = retrieval from external DB at query time. Fresh knowledge. Retrieval fails.
+Fine-tuning = bake knowledge/style into weights. No prompt needed. Stale on updates.
+
+Decision:
+  Knowledge changes?     YES → RAG
+  Style/format task?     YES → Fine-tuning
+  <500 examples?              → Prompting only
+  500+ examples + stable?    → Fine-tuning
+  Large knowledge base?       → RAG
+
+CRITICAL: Fine-tune on STYLE not FACTS. Stale facts in weights override RAG.
+          Medical dosages as weights = confidently wrong after guideline update.
+
+Production systems = all three combined:
+  Fine-tuning → HOW to answer (style, format, structure)
+  RAG         → WHAT to say (current facts, citable)
+  Prompting   → short session-specific instructions only
+
+TRADEOFFS:
+  Prompting  → cheap to update, expensive per-token at scale, lost-in-middle
+  RAG        → always fresh, retrieval failures → hallucinations, complex pipeline
+  Fine-tuning → cheap per-request, stale on updates, can't cite sources
+  Hybrid     → two compounding failure modes. Fine-tuned prior can fight RAG context.
+
+BUGS CHEATSHEET
+---------------
+  Growing context forever              →  trim_messages() with include_system=True
+  System prompt gets dropped           →  protect messages[0] explicitly
+  temp=1 on tool selection             →  temp=0, top_p=0.1
+  Fine-tuning facts that change        →  fine-tune style, RAG the facts
+  Single approach for everything       →  use all three combined
+
+INTERVIEW Q&A
+-------------
+Q: When would you use fine-tuning over RAG?
+A: When the task is about style/format/reasoning patterns, not facts. When
+   knowledge is stable (doesn't change). When you have 500+ quality examples.
+   Never fine-tune facts that can change — stale weights override fresh RAG.
+
+Q: How would you cut LLM costs by 90% without changing the model?
+A: Prompt caching. Keep system prompt stable (same tokens every request), mark
+   it with cache_control. Anthropic caches it — subsequent requests pay 10%.
+   At 10k req/day with 5k token system prompt: $150 → $15 per day.
+
+Q: An agent hits the context limit after 4 rounds of tool calls. What do you do?
+A: First do the math (tool calls × tokens per call × rounds). Then: trim oldest
+   messages while protecting system prompt. Offload large tool results to storage,
+   inject references instead. Reduce per-tool-result verbosity.
+
+Q: Why is top-p better than top-k for agent tool calls?
+A: Top-k always samples from k tokens even when model is 99% confident. Top-p
+   shrinks the nucleus when confidence is high. Deterministic when it should be,
+   varied when it should be. More faithful to the model's own confidence signal.
+
+================================================================================

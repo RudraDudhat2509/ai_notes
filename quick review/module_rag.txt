@@ -1,0 +1,158 @@
+================================================================================
+PRODUCTION RAG — QUICK REFERENCE
+================================================================================
+
+CHUNKING
+--------
+How you split docs before embedding. Bad chunks = bad retrieval regardless of model.
+
+  Fixed-size          →  every N tokens. Fast. No structure awareness. Good for logs/CSVs.
+  Recursive character →  tries paragraph→line→sentence→word. DEFAULT for most systems.
+  Semantic            →  embeds sentences, splits where similarity drops. Best quality.
+                         Expensive. Use for research papers, legal docs.
+  Late chunking       →  embed full doc first, pool per chunk. Solves pronoun resolution.
+
+Always use 50-100 token overlap — prevents answers split across chunk boundaries.
+Always store metadata (source, page, section) on every chunk for debugging.
+
+Failure modes: too small = diluted meaning. Too large = lost in middle. No overlap = split answers.
+
+EMBEDDING MODELS
+----------------
+  OpenAI text-embedding-3-small  →  general English, fast iteration, data leaves servers
+  BGE-M3 (local)                 →  multilingual (100+ langs), 0 cost/token after infra
+  Cohere Embed v3                →  asymmetric (query ≠ document encoding), managed API
+  Fine-tuned local               →  best on your domain with 500+ (query, doc) pairs
+
+Decision: multilingual → BGE-M3. Data private → local. >4B tokens/month → local wins cost.
+Changing embedding model = full re-embed of corpus. Treat like a DB schema migration.
+Always normalize_embeddings=True for cosine similarity correctness.
+
+RETRIEVAL
+---------
+Dense (vector search): semantic similarity via HNSW graph. <10ms on 10M vectors.
+  Miss: exact keywords, product names, error codes, version numbers.
+
+Sparse (BM25): keyword matching. TF-IDF + length normalization.
+  Miss: synonyms ("fallback" ≠ "backup provider"). Hit: "LangfuseError 401".
+
+Hybrid = both + RRF merge. Always use hybrid in production.
+RRF: rank-based not score-based. RRF_score = 1/(rank_dense+60) + 1/(rank_sparse+60)
+
+Advanced techniques:
+  HyDE           →  generate fake answer, embed it, search with that. Better semantic match.
+  Multi-query    →  3 phrasings of query, union results. Parallelize.
+  Contextual     →  prepend LLM-generated context to each chunk before embedding. +49% recall.
+  Small-to-big   →  index small child chunks, return large parent to LLM.
+  Metadata filter→  filter by version/product/date BEFORE vector search (never after).
+  SPLADE         →  learned sparse retrieval. Expands "timeout"→"duration","wait". Beats BM25.
+
+RERANKING
+---------
+Bi-encoder (retrieval): query + doc encoded separately. Fast. Pre-computed.
+  Document doesn't "see" the query → general embedding, not query-aware.
+
+Cross-encoder (reranker): query + doc concatenated. One forward pass per pair.
+  Full attention across both → query-aware → accurate but slow (200-500ms for 50 candidates).
+
+Pattern: retrieve top-50 fast → rerank → return top-5.
+Never retrieve only 5 — if correct doc is rank 6 it's gone forever.
+
+  from sentence_transformers import CrossEncoder
+  reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+  scores = reranker.predict([[query, doc] for doc in candidates])
+
+Cohere Rerank API = managed, multilingual. Local ms-marco = private, English only.
+Cache reranker results in Redis — same query = same result. Saves 250ms on repeat traffic.
+
+TRADEOFFS: reranking adds 200-500ms. Worth it for high-stakes or many candidates.
+           Not worth it if retrieval quality is so bad reranking can't rescue it.
+
+RAGAS EVALUATION
+----------------
+Four metrics. Read in causal order — fix root cause not downstream symptoms.
+
+  Faithfulness      =  claims supported by context / total claims in answer
+                       HIGH = LLM not hallucinating. Does NOT mean answer is correct.
+
+  Answer Relevancy  =  does answer address the question? (cosine sim of generated Q vs original)
+                       HIGH = answer is useful and on-topic.
+
+  Context Precision =  relevant chunks / total chunks retrieved (rank-weighted)
+                       LOW = noisy retrieval. Fix: reranker, metadata filter, better embeddings.
+
+  Context Recall    =  ground truth sentences supported by context / total GT sentences
+                       LOW = retrieval missing chunks. LLM hallucinates to fill gap.
+                       MOST DANGEROUS. Missing context → hallucination. Fix: hybrid, multi-query.
+
+Precision vs Recall:
+  Precision = "Is my bag full of junk?" (inward — what I retrieved)
+  Recall    = "Did I miss anything?" (outward — what I should have retrieved)
+  Increasing top_k: recall up, precision down → add reranker to restore precision.
+
+Diagnosis example: high precision + low recall = retrieval selective but missing chunks.
+Fix recall first → answer relevancy likely self-corrects downstream.
+
+LLM-as-judge: generate with Claude, judge with GPT-4 (or reverse). Avoid self-scoring.
+
+RAG SECURITY
+------------
+Three attack types:
+
+1. Indirect Prompt Injection — malicious instruction in indexed document.
+   User query is innocent. Retrieved doc contains attack. LLM follows it.
+   Defense: scan at index time AND retrieval time. XML wrap retrieved content.
+   Escape < and > from untrusted content before wrapping (prevents tag injection).
+
+2. Data Exfiltration — unauthorized queries extracting private indexed content.
+   Defense: access control at vector DB query level (not application level).
+   Unauthorized chunks must be INVISIBLE to search, not discarded after retrieval.
+
+3. Context Flooding — oversized doc fills context, evicts system prompt.
+   Defense: hard cap per chunk (1024 tokens), hard cap on total retrieved context.
+
+Prompt hardening:
+  Wrap retrieved content in XML tags. Explicitly tell model to treat as data not instructions.
+  NOT foolproof — raises the bar. Defense in depth.
+
+Trust tiers: internal > verified > external > untrusted (user uploads).
+Untrusted = scan before index, scan before inject, XML wrap, human review flag.
+
+Agentic RAG = highest risk. Retrieved content feeds tool calls = real-world actions.
+Defense: privilege separation. Read-only analysis pass → decision pass (never sees raw chunks).
+High-stakes tools (payment, email, delete) = human approval required.
+
+FULL PIPELINE
+-------------
+Query → multi-query (3 variants) + HyDE → metadata pre-filter → parallel dense+sparse
+      → weighted RRF (top-20) → cross-encoder rerank → small-to-big expansion → LLM
+
+INTERVIEW Q&A
+-------------
+Q: RAG answers are sometimes wrong even when source doc has right answer. Diagnose.
+A: Two possible failures: retrieval (wrong chunks) or generation (hallucination).
+   Run RAGAS. Low context recall = retrieval missing chunks (fix: hybrid, multi-query).
+   Low faithfulness = LLM ignoring context (fix: prompt hardening, lower temperature).
+   Low precision = noisy chunks confusing LLM (fix: reranker, metadata filter).
+
+Q: When would you use BM25 over dense retrieval?
+A: When queries contain exact keywords: error codes, product names, version strings,
+   API method names. Dense retrieval misses exact matches. In production, always hybrid.
+
+Q: What's the difference between context precision and context recall?
+A: Precision = of what I retrieved, how much was relevant? Recall = of all relevant
+   content, how much did I retrieve? Increasing top_k raises recall but hurts precision.
+   Solution: increase top_k + add reranker to restore precision.
+
+Q: How would you secure a RAG pipeline where users can upload documents?
+A: Scan before indexing (regex + LLM scanner), scan again at retrieval time.
+   Assign untrusted trust tier. Wrap retrieved content in XML with explicit instruction
+   to treat as data. Access control at vector DB level. Cap chunk size. Log everything.
+   For agentic RAG: privilege separation — analysis pass never sees raw retrieved content.
+
+Q: Why is context recall more dangerous than low precision?
+A: Low precision = noisy context, LLM works harder but can filter noise.
+   Low recall = missing information, LLM must hallucinate to fill the gap.
+   Hallucination from missing context is the primary RAG failure mode in production.
+
+================================================================================
