@@ -2,36 +2,34 @@
 ASYNC PYTHON — QUICK REFERENCE
 ================================================================================
 
-WHY ASYNC
+CORE IDEA
 ---------
-Blocking code waits for I/O (network/DB/disk) doing nothing.
-Async suspends at await, lets event loop run other coroutines, resumes when done.
-I/O-bound → async. CPU-bound → multiprocessing. Threads useless (GIL).
+Blocking code waits for I/O doing nothing. Async suspends at await, runs
+other coroutines, resumes when I/O is done. One thread, many concurrent tasks.
 
-EVENT LOOP
-----------
-Single thread. Manages all coroutines.
-Only one runs at any instant — but hundreds can be SUSPENDED simultaneously.
-1000 users = 1000 coroutines waiting. One thread. No threads per user.
-Thread = 1-8MB. Suspended coroutine = few KB. This is why it scales.
+  I/O-bound  →  async/await
+  CPU-bound  →  multiprocessing (threads can't parallelize due to GIL)
 
-COROUTINES
-----------
-async def  →  function that can pause/resume
-await      →  pause point. gives control to event loop. resumes when done.
+EVENT LOOP + COROUTINES
+-----------------------
+Single thread. Only one coroutine runs at any instant.
+But hundreds can be SUSPENDED simultaneously (waiting for I/O).
+1000 users = 1000 suspended coroutines. Not 1000 threads.
+Thread = 1-8MB. Suspended coroutine = few KB. Scales massively.
 
-TRAP — blocking inside async def:
-  time.sleep(5)       →  freezes entire event loop
-  requests.get(url)   →  same problem
-  plain def handler   →  FastAPI moves it to thread pool (safe)
+  async def  →  coroutine (can pause/resume)
+  await      →  pause point. surrenders control. resumes when done.
+
+TRAP — blocking inside async def kills all other requests:
+  time.sleep(5)     →  freezes event loop
+  requests.get(url) →  same. use httpx + await instead.
+  plain def handler →  FastAPI auto-runs in thread pool (safe)
 
 HTTPX + SHARED CLIENT
 ---------------------
-requests = blocking sockets. Never use in async def.
-httpx = non-blocking. Always use with await.
-
-New client per request = new TCP+TLS handshake every time. Wasteful.
-Shared client via lifespan = connections reused. Fast.
+requests = blocking sockets. httpx = non-blocking. Always httpx in async.
+New client per request = new TCP+TLS handshake every time = slow + wasteful.
+Shared client via lifespan = connections reused = fast.
 
   @asynccontextmanager
   async def lifespan(app):
@@ -39,39 +37,40 @@ Shared client via lifespan = connections reused. Fast.
       yield
       await app.state.client.aclose()
 
-GENERATORS
-----------
-yield = pause, give value, resume on next().
+GENERATORS + ASYNC GENERATORS
+------------------------------
+yield = pause, produce one value, resume on next(). State preserved between calls.
 Calling gen() returns generator object — nothing runs until next().
-State (variables) preserved between next() calls.
-Memory benefit: process one item at a time, not all in RAM.
-async def is built on generators. await = yield to event loop.
-
-ASYNC GENERATORS
-----------------
-async def + yield = streams data as it arrives.
-client.post() = waits for full response. client.stream() = chunks as they arrive.
-Used for LLM token streaming → user sees response word by word.
+async def + yield = streams data chunk by chunk as it arrives.
+client.stream() vs client.post() → stream = chunks live, post = full body first.
+Used for LLM streaming → user sees tokens appear word by word.
 
 GATHER vs TASKGROUP vs QUEUE
 -----------------------------
-gather(return_exceptions=True)  →  fixed tasks, want all results, handle failures
-TaskGroup                       →  fixed tasks, one failure cancels ALL (atomic)
-Queue + N workers               →  large workload, controlled concurrency
+  gather(return_exceptions=True)  →  small fixed set, want ALL results
+  TaskGroup                       →  small fixed set, one failure = cancel ALL
+  Queue + N workers               →  large workload, controlled concurrency
 
-gather default (no return_exceptions): first exception raised, others orphaned.
-One None sentinel per worker (not one total) for shutdown.
-task_done() required if using queue.join().
+  gather default: first exception raised, others ORPHANED (still running, lost)
+  TaskGroup: exception → all remaining cancelled. No orphans. Clean.
+  Queue: 10k jobs + 50 workers = always exactly 50 in-flight. Never 10k.
+
+  TRADEOFFS:
+  - gather is simpler but messy error handling
+  - TaskGroup is safer but can't get partial results
+  - Queue is most powerful but more code. Needs persistent storage (Redis)
+    if jobs must survive server restart.
 
 TIMEOUTS + RETRY
 ----------------
-  async with asyncio.timeout(10):   # cancel if no response in 10s
+  async with asyncio.timeout(10):       # cancel if no response in 10s
       response = await client.get(url)
-      response.raise_for_status()   # raise on 4xx/5xx
+      response.raise_for_status()       # raise on 4xx/5xx (always do this)
 
   @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-  Retry: 5xx, timeout, network errors. Don't retry: 404, 403, bad input.
-  Failed after all retries → dead letter queue. Never silently drop.
+  Retry: 5xx, timeout, network errors.
+  Don't retry: 404 (doesn't exist), 403 (forbidden).
+  After all retries fail → dead letter queue. Never silently drop.
 
 BUGS CHEATSHEET
 ---------------
@@ -79,17 +78,32 @@ BUGS CHEATSHEET
   requests.get() in async def        →  await httpx_client.get()
   New client per request             →  shared client via lifespan
   No timeout                         →  asyncio.timeout(n)
-  No raise_for_status()              →  add it after every HTTP call
+  No raise_for_status()              →  add after every HTTP call
   gather() no return_exceptions      →  add return_exceptions=True
   One None sentinel for N workers    →  one None per worker
   Missing task_done()                →  add after every queue.get()
   Background task uses yield-dep     →  open fresh resource inside task
+  open() in async def                →  aiofiles or run_in_executor
 
-INTERVIEW LINE
---------------
-"Async uses coroutines on a single event loop thread. When a coroutine hits
-await, it suspends and the event loop runs others. 1000 users = 1000 suspended
-coroutines, not 1000 threads. Only limitation: I/O-bound only — CPU work needs
-multiprocessing."
+INTERVIEW Q&A
+-------------
+Q: Why not use threads for concurrency in Python?
+A: GIL — only one thread runs Python bytecode at a time. Threads can't
+   truly parallelize. For I/O-bound: async is better. For CPU: multiprocessing.
+
+Q: What's the difference between concurrency and parallelism?
+A: Concurrency = multiple tasks making progress (interleaved on one thread).
+   Parallelism = multiple tasks running at the same time (multiple cores).
+   Async = concurrent. Multiprocessing = parallel.
+
+Q: 100 users hit an async endpoint with time.sleep(5). How long does user 100 wait?
+A: ~500 seconds. time.sleep blocks the entire event loop. All requests serialize.
+
+Q: When would you use Queue over gather?
+A: When the workload is large (1000+ items) or unknown. gather fires everything
+   at once. Queue controls how many are in-flight at any time.
+
+Q: What happens to other tasks when one task blocks the event loop?
+A: They all freeze. The event loop is single-threaded. A block = full stop.
 
 ================================================================================

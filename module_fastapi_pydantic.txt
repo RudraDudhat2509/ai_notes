@@ -4,102 +4,111 @@ FASTAPI + PYDANTIC — QUICK REFERENCE
 
 PYDANTIC
 --------
-Type hints = documentation only. Pydantic = runtime enforcement.
-Invalid data → ValidationError at the boundary, not deep in your code.
-
-Coercion: "20" → 20 (str to int). Missing field → error. Wrong type → error.
+Type hints = documentation only. Python ignores them at runtime.
+Pydantic = runtime enforcement. Invalid data → ValidationError at the boundary.
+Coercion: "20" → 20. Missing required field → error. Wrong type → error.
 
 Field():
   min_length, max_length       →  string constraints
-  gt, lt, ge, le               →  number constraints (>, <, >=, <=)
+  gt, lt, ge, le               →  number constraints
   default=value                →  optional field
-  default_factory=list         →  mutable defaults (NEVER default=[])
+  default_factory=list/dict    →  mutable defaults (NEVER default=[] or {})
   exclude=True                 →  hide from serialization (API keys, secrets)
   alias="camelCase"            →  different name in JSON vs Python
   description="..."            →  LLM reads this for tool/function calling
 
-MUTABLE DEFAULT BUG (always comes up)
-  WRONG:   tools: list[str] = Field(default=[])   # shared across all instances
+MUTABLE DEFAULT BUG
+  WRONG:   tools: list[str] = Field(default=[])   # ALL instances share one list
   CORRECT: tools: list[str] = Field(default_factory=list)
-  Same for dicts: default_factory=dict
 
-@field_validator("field_name")
+@field_validator("name")
 @classmethod
-def validate(cls, v):
-    if bad: raise ValueError("msg")
-    return v   # must return value. runs after type check.
+def validate(cls, v):           # cls = class (instance doesn't exist yet)
+    if bad: raise ValueError()
+    return v                    # must return value. can transform here.
 
-@model_validator(mode="after")          # NO @classmethod here
-def cross_check(self) -> "Model":
-    if self.end <= self.start: raise ValueError("...")
-    return self   # must return self
+@model_validator(mode="after")  # NO @classmethod. instance already exists.
+def cross_check(self):
+    if self.end <= self.start: raise ValueError()
+    return self                 # must return self
 
-RULE: Field constraints → simple rules. field_validator → one field logic.
-      model_validator → rules needing multiple fields.
-
-LLM USE: Field(description="...") = what LLM reads to fill the field.
-         Pydantic validates LLM output before your code touches it.
+TRADEOFFS: Field constraints vs validators
+  Field(gt=0)                →  simple, declarative, prefer this
+  @field_validator            →  complex logic, format checking, normalization
+  @model_validator            →  only when you need TWO fields together
 
 DECORATORS
 ----------
-Function that wraps another function to add behavior.
-@decorator = shorthand for func = decorator(func)
-
-  def decorator(func):
-      def wrapper(*args, **kwargs):
-          result = func(*args, **kwargs)
-          return result
-      return wrapper   # must return wrapper
-
-Decorator factory (takes args): @repeat(3) → repeat(3) returns decorator first.
+@decorator = func = decorator(func). Runs at import time, wraps the function.
+@repeat(3) = decorator factory. repeat(3) runs first, returns a decorator.
 Every level must return: outer→decorator, decorator→wrapper, wrapper→result.
 Missing any return → None → TypeError when called.
 
 FASTAPI DEPENDENCY INJECTION
 -----------------------------
-Shared logic (auth, DB) shouldn't be repeated in every endpoint. Use Depends().
+Shared logic once, inject everywhere. Change once, updates all endpoints.
 
   async def get_current_user(auth: str = Header()):
-      user = decode_jwt(auth[7:])
-      if not user: raise HTTPException(401)
-      return user
+      payload = decode_jwt(auth[7:])
+      if not payload: raise HTTPException(401)
+      return payload
 
   @app.get("/data")
   async def handler(user = Depends(get_current_user)):
-      ...   # user is injected, no repetition
+      ...   # user injected automatically
 
-Composable: deps can depend on other deps. Chain stops at first failure.
+Composable chains: dep can depend on another dep. Any layer raises → chain stops.
 
-yield in dependency = cleanup after request:
+yield in dep = cleanup after request ends:
   async def get_db():
       async with AsyncSession(engine) as session:
-          yield session   # endpoint runs here
-          # session closed automatically after
+          yield session   # endpoint uses this
+      # session auto-closed after request
 
-BackgroundTasks = fire-and-forget after response sent:
-  background_tasks.add_task(log_to_langfuse, user.id, prompt, response)
-  return {"response": response}   # user gets this immediately
+BackgroundTasks = fire-and-forget AFTER response:
+  background_tasks.add_task(log_usage, user.id, tokens)
+  return response   # user gets this immediately. log runs after.
 
-NEVER pass yield-based deps (DB sessions) into background tasks.
-They close after the response. Task runs after. Use → closed session → crash.
-Fix: open a fresh session inside the background task.
+TRADEOFFS: BackgroundTasks vs Queue
+  BackgroundTasks  →  simple, in-memory, lost on server crash, no retry
+  Redis Queue      →  persistent, survives crashes, retryable, more setup
+  Use BG tasks for low-stakes (logging). Use queue for critical work (billing).
 
 REQUEST LIFECYCLE
 -----------------
-1. Pydantic validates request body
-2. Depends chain runs (bottom-up)
-3. Endpoint runs
-4. Response sent to user
-5. Background tasks run
-6. yield-dep cleanup runs (DB closed etc.)
+1. Pydantic validates body  2. Depends chain runs  3. Endpoint executes
+4. Response sent to user    5. Background tasks run  6. yield cleanup runs
 
 BUGS CHEATSHEET
 ---------------
-  default=[] or {}              →  default_factory=list / dict
-  @classmethod on model_validator after  →  remove it
-  Missing return in decorator   →  add return wrapper / return decorator
-  validator not returning v     →  always return v or self
-  Passing DB session to bg task →  open fresh session inside task
-  No raise_for_status()         →  add after every HTTP call
+  default=[] or {}                    →  default_factory=list/dict
+  @classmethod on model_validator     →  remove it
+  Missing return in decorator         →  add return wrapper / return result
+  validator not returning value       →  always return v or self
+  Passing DB session to bg task       →  open fresh session inside task
+  No raise_for_status()               →  add after every HTTP call
+  New httpx client per request        →  shared client via lifespan
+
+INTERVIEW Q&A
+-------------
+Q: What's wrong with default=[] in a Pydantic model?
+A: Mutable default is shared across all instances. One instance modifies it,
+   all others see the change. Use default_factory=list instead.
+
+Q: When do you use model_validator vs field_validator?
+A: field_validator for single-field logic (format, normalization).
+   model_validator only when validation needs TWO fields together (e.g. end > start).
+
+Q: What does yield do inside a FastAPI dependency?
+A: Splits it into setup/teardown. Code before yield = setup (runs before endpoint).
+   Code after yield = cleanup (runs after endpoint, even on exception).
+
+Q: What's the difference between BackgroundTasks and a proper queue?
+A: BackgroundTasks = in-memory, lost on crash, no retry. A Redis queue survives
+   restarts and supports retries. Use queue for anything critical.
+
+Q: Why can't you pass a DB session to a background task?
+A: Session is yield-based — it closes after the response is sent. Background task
+   runs after the response. By then the session is already closed.
 
 ================================================================================

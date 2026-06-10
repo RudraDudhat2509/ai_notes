@@ -2,69 +2,97 @@
 JWT AUTH — QUICK REFERENCE
 ================================================================================
 
-WHY JWT
--------
+CORE IDEA
+---------
 Passwords every request → leaks. Sessions → server storage, doesn't scale.
-JWT = self-contained token. Server stores nothing. No DB lookup per request.
+JWT = self-contained. Server stores nothing. No DB lookup per request.
 
 STRUCTURE
 ---------
-header.payload.signature   (three base64 strings, dot-separated)
-
-Payload contains: user_id, role, exp (expiry timestamp), type (access/refresh)
+header.payload.signature  (base64 strings, dot-separated)
+Payload: user_id, role, exp, type (access/refresh)
 Signature = HMAC_SHA256(header + payload, SECRET_KEY)
 
-JWT is SIGNED not ENCRYPTED. Anyone can decode payload. Never put secrets in it.
+JWT is SIGNED not ENCRYPTED. Anyone can decode payload.
 Tamper with payload → signature mismatch → rejected.
+NEVER put passwords, credit cards, or secrets in payload.
 
-VERIFICATION (no DB needed)
-----------------------------
-Re-compute signature with SECRET_KEY. Matches → payload is genuine → read user_id.
+VERIFICATION
+------------
+Re-compute signature with SECRET_KEY. Matches → payload is genuine.
+No DB query needed. user_id read directly from payload.
 
-ACCESS + REFRESH TOKEN PATTERN
--------------------------------
-Access token   →  15 min, used for every API call, NOT stored in DB
-Refresh token  →  7 days, stored in DB, only used to get new access tokens
+ACCESS + REFRESH TOKENS
+------------------------
+Access token   →  15 min, API calls, NOT stored
+Refresh token  →  7 days, stored in DB, only used to get new access token
 
-Ban user → delete refresh token from DB → locked out in ≤15 min
-No DB hit on every request. Only on token refresh (rare).
+Flow: login → get both tokens → use access for requests → refresh when expired
+Ban user: delete refresh token from DB → locked out within 15 min max.
 
-INVALID vs EXPIRED — ALWAYS DISTINGUISH
------------------------------------------
-ExpiredSignatureError  →  valid token, just old  →  tell client to REFRESH
-JWTError               →  tampered/malformed     →  force RE-LOGIN
+TRADEOFFS: Invalidation strategies
+  Short expiry (15min)      →  0 DB hits, max 15min exposure if leaked
+  Access + refresh          →  0 DB hits per request, industry standard
+  Redis blacklist           →  instant invalidation, but 1 Redis hit per request
+  Long-lived token          →  simple, but can't revoke. Never use in prod.
 
-  from jose import jwt, JWTError, ExpiredSignatureError
+ALWAYS DISTINGUISH — critical for client behavior
+--------------------------------------------------
+  ExpiredSignatureError  →  valid token, just old  →  client should REFRESH
+  JWTError               →  tampered/malformed     →  client should RE-LOGIN
 
   try:
       payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
   except ExpiredSignatureError:
-      raise HTTPException(401, "token expired")   # client should refresh
+      raise HTTPException(401, "token expired")
   except JWTError:
-      raise HTTPException(401, "invalid token")   # client should re-login
+      raise HTTPException(401, "invalid token")
 
-Catching both as JWTError → client can't tell whether to refresh or re-login.
+Catch both as JWTError → client can't tell → won't refresh when it should.
 
 ALWAYS CHECK TOKEN TYPE
 ------------------------
   if payload.get("type") != "access":
-      raise HTTPException(401, "invalid token type")
-  # prevents refresh tokens being used as access tokens
+      raise HTTPException(401, "wrong token type")
+  # prevents refresh tokens being accepted on protected routes
 
 SECURITY RULES
 --------------
-  SECRET_KEY         →  from os.environ, never hardcoded, 32+ random chars
-  ANTHROPIC_API_KEY  →  separate from SECRET_KEY (different things entirely)
-  Payload            →  only non-sensitive identifiers (user_id, role, exp)
-  exp                →  always set. tokens without expiry = valid forever
-  raise_for_status() →  always call after HTTP requests
+  SECRET_KEY ≠ ANTHROPIC_API_KEY   (two different things, two different env vars)
+  SECRET_KEY from os.environ        (never hardcoded, 32+ random chars)
+  Always set exp                    (no exp = valid forever = disaster)
+  raise_for_status()                (always after HTTP calls)
 
 LEAKED KEY RESPONSE
---------------------
-1. Rotate key immediately (before touching git)
-2. git filter-repo to remove from history
+-------------------
+1. Rotate key FIRST (bots scrape GitHub in seconds)
+2. git filter-repo to remove from all history
 3. Force push
-4. Add to .gitignore
-5. Use .env pattern going forward
+4. Add to .gitignore + use .env pattern
+
+INTERVIEW Q&A
+-------------
+Q: How do you invalidate a JWT before it expires?
+A: Three ways: (1) short expiry so max damage is small, (2) access+refresh
+   pattern — delete refresh token from DB, locked out in ≤15min, (3) Redis
+   blacklist for instant invalidation but adds a DB hit per request.
+
+Q: Why use access + refresh instead of one long-lived token?
+A: Long-lived = if leaked, attacker has access for weeks. Access+refresh = short
+   window of exposure, revocable via DB, no DB hit on every request.
+
+Q: What's the difference between ExpiredSignatureError and JWTError?
+A: ExpiredSignatureError = signature is valid, token is just old = client can
+   recover by refreshing. JWTError = something is wrong with the token itself
+   = force re-login. Treating both the same breaks the client flow.
+
+Q: JWT is "stateless" — what does that mean and what does it break?
+A: Stateless = server stores nothing per user. Scales horizontally.
+   Breaks: immediate revocation. You can't invalidate a valid token without
+   adding state (blacklist/refresh token DB). Pure stateless = no revocation.
+
+Q: Someone sends their refresh token to a protected route. What happens?
+A: Without token type check — it works. Attacker who steals refresh token
+   can impersonate user indefinitely (7 days). Always check payload["type"].
 
 ================================================================================
