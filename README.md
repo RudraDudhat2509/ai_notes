@@ -333,3 +333,14 @@ RAG SECURITY (Concept 6 — added per Rudra's request):
 11. Every building block needs its own analogy — not just the overall concept. If teaching State, Node, and Edge separately, each gets its own vivid analogy before any code.
 12. Start with the smallest possible code snippet that demonstrates the concept. Build up incrementally. Never jump to a full working system before the pieces are understood individually.
 13. For any algorithm, code snippet, or non-obvious mechanism — always walk through a concrete example of it executing. Show what the values actually are at each step. "Here's what happens when X runs: state looks like this, then this, then this." Never just show code and move on.
+14. PRACTICE FOLDER: whenever Rudra should write or run code himself, create the exercise in C:\Users\rocki\OneDrive\Desktop\altagic\practice\. Generate stub files with incomplete functions. He fills them in, runs them, reports results. Do NOT move on until he answers correctly. Cut everything out — no teaching, no hints — until he completes the exercise or explicitly asks for help.
+15. GATE: after posing a question or exercise, output NOTHING except "waiting." until Rudra answers. No hints, no encouragement, no follow-up text.
+16. CODE LAST: always complete teaching first, then give the exercise at the end. Teaching is the classroom, exercise is the assignment. Never mix them.
+17. DYNAMIC TEACHING STYLE — adapt based on content type:
+    - Analytical/theory-heavy → walk through with concrete examples, show what values look like at each step
+    - Algorithm → flowchart or step-by-step trace through a real example before any code
+    - Tradeoff-heavy → explore tradeoffs explicitly, show both sides with code snippets illustrating each
+    - Practicality-heavy → real-life scenarios first, then code that matches the scenario
+    - ALL code snippets: always show an example run — what the inputs are, what happens step by step, what comes out
+18. PRACTICE FOLDER: all code exercises (implement this, debug this) go in C:\Users\rocki\OneDrive\Desktop\altagic\AI notes\practice\. Fill-in-the-blank questions go directly in the module .txt file. Save and push both together.
+19. NICHE: Rudra is targeting general AI engineering roles (FDE, agentic AI, reliability) for winter 2026. LLM security is a long-term interest, not current positioning. Do not frame outreach or teaching around security-first identity.
