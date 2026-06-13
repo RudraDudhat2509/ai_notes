@@ -1,0 +1,124 @@
+================================================================================
+LANGGRAPH + AGENTIC SYSTEMS — QUICK REFERENCE
+================================================================================
+
+WHAT IT IS
+----------
+Framework for building agents as directed graphs.
+Nodes = Python functions. Edges = transitions. State = shared memory (TypedDict).
+Enables cycles — retrieve → generate → check → retry → generate. LangChain can't.
+
+AGENT vs CHATBOT
+----------------
+Chatbot: one shot. Agent: ReAct loop until goal reached.
+ReAct: Thought → Action → Observe → repeat.
+Agent = LLM + tools + ReAct loop + memory.
+
+STATE
+-----
+  class AgentState(TypedDict):
+      query: str
+      context: list
+      answer: str
+      attempts: int
+
+TypedDict not Pydantic: LangGraph merges partial updates constantly.
+Pydantic would require full object reconstruction on every node update.
+Reducer for append: Annotated[list, operator.add] — both writes preserved.
+Created by LangGraph internally from the dict you pass to invoke().
+
+NODES
+-----
+  async def generate_node(state: AgentState) -> dict:
+      answer = await call_llm(state["query"], state["context"])
+      return {"answer": answer, "attempts": state["attempts"] + 1}
+
+Return ONLY what changed. LangGraph merges into full state.
+Increment attempts in generate, not retrieve: one full attempt = retrieve + generate.
+
+EDGES
+-----
+  graph.add_edge("retrieve", "generate")   # always
+
+  def should_continue(state: AgentState) -> str:   # sync, no I/O
+      if state["answer"] == "INSUFFICIENT_CONTEXT" and state["attempts"] < 3:
+          return "retry"
+      return "done"
+
+  graph.add_conditional_edges("generate", should_continue,
+                               {"retry": "retrieve", "done": END})
+
+FULL SKELETON
+-------------
+  graph = StateGraph(AgentState)
+  graph.add_node("retrieve", retrieve_node)
+  graph.add_node("generate", generate_node)
+  graph.set_entry_point("retrieve")
+  graph.add_edge("retrieve", "generate")
+  graph.add_conditional_edges("generate", should_continue, {"retry": "retrieve", "done": END})
+  app = graph.compile()
+  result = await app.ainvoke({"query": "...", "attempts": 0})
+
+ASYNC + PARALLEL
+----------------
+  async def retrieve_node(state: AgentState) -> dict:
+      shopify, meta = await asyncio.gather(
+          fetch_shopify(state["client_id"]),
+          fetch_meta(state["client_id"])
+      )
+      return {"context": [shopify, meta]}
+
+Sequential: 2.4s. Parallel: 1.2s. Which to parallelize: tasks with no dependency.
+Memory read + Retrieval → parallel. Generation → sequential (needs both outputs).
+
+CHECKPOINTING
+-------------
+Saves full state after every node. Crash → resume from last completed node.
+
+  app = graph.compile(checkpointer=AsyncSqliteSaver.from_conn_string("cp.db"))
+  config = {"configurable": {"thread_id": "user-001"}}
+  await app.ainvoke({"query": "..."}, config=config)
+  await app.ainvoke(None, config=config)   # None = resume from checkpoint
+
+thread_id = one checkpoint per user. 1000 users = 1000 isolated state histories.
+Checkpoint saved AFTER node completes. Mid-run crash = re-run that node from start.
+Backends: SqliteSaver (dev) → RedisSaver (prod, TTL) → PostgresSaver (audit trail).
+
+HUMAN IN THE LOOP
+-----------------
+  app = graph.compile(checkpointer=cp, interrupt_before=["send_whatsapp"])
+  await app.ainvoke({"query": "..."}, config=config)   # pauses before send_whatsapp
+  # show human the draft
+  await app.aupdate_state(config, {"report": "corrected report"})
+  await app.ainvoke(None, config=config)                # resumes, sends corrected report
+
+Internally: LangGraph raises GraphInterrupt after saving checkpoint. ainvoke catches it cleanly.
+aupdate_state: loads checkpoint, applies your dict on top, saves new checkpoint.
+
+MULTI-AGENT
+-----------
+One agent doing everything = huge prompt, context fills fast, one failure kills all.
+Multi-agent: orchestrator coordinates, workers each do one thing.
+
+  async def analyze_node(state: OrchestratorState) -> dict:
+      result = await worker.ainvoke({"task": f"Analyze: {state['query']}"})
+      return {"analysis": result["result"]}
+
+PRODUCTION BUGS
+---------------
+  No max_iterations guard        →  track attempts, check in edge function
+  Context explosion              →  summarize tool results before appending
+  Conditional edge unknown string→  always have default return case
+  Sync blocking in async node    →  async def + await everywhere
+  Thread ID collision            →  uuid4() per conversation
+  Checkpoint storage unbounded   →  Redis TTL or scheduled cleanup
+
+INTERVIEW LINE
+--------------
+"LangGraph models agents as directed graphs. Nodes are Python functions,
+edges define routing (normal or conditional), state is a TypedDict that
+travels through the graph. Checkpointing saves state after every node —
+enables crash recovery and HITL. Always set max_iterations in state and
+summarize large tool results to prevent context explosion."
+
+================================================================================

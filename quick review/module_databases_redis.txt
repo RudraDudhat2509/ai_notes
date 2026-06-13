@@ -1,0 +1,96 @@
+================================================================================
+DATABASES + REDIS — QUICK REFERENCE
+================================================================================
+
+CONNECTION POOLING
+------------------
+Create N connections at startup, reuse them. Establishing a connection = 100-300ms.
+Never create per request.
+
+  pool = await asyncpg.create_pool(dsn="...", min_size=5, max_size=20)
+  async with pool.acquire() as conn:   # borrow, auto-returns
+      return await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
+
+When coroutine hits pool.acquire() and pool is full → SUSPENDS (not blocks).
+Event loop runs other coroutines. When connection freed → coroutine RESUMES.
+
+Diagnosis: DB CPU at 8% + slow responses = pool exhaustion, not DB bottleneck.
+Fix: increase max_size or add Redis cache to reduce DB hits.
+
+INDEXES
+-------
+Separate B-tree structure. Maps column values → row locations.
+Without: full table scan O(n). With: O(log n) always.
+
+  CREATE INDEX idx_users_email ON users(email);
+
+Primary keys have indexes automatically. Add indexes on columns you filter/sort often.
+Tradeoff: reads faster, writes slower (index updated on every INSERT/UPDATE).
+
+N+1 PROBLEM
+-----------
+1 query to get N records, then N more queries for each record's related data.
+
+  BAD: fetch users → loop → fetch orders per user → N+1 queries
+  GOOD: SELECT users.*, orders.* FROM users JOIN orders ON orders.user_id = users.id
+
+TRANSACTIONS
+------------
+All operations succeed or all fail. No partial state.
+
+  async with conn.transaction():
+      await conn.execute("UPDATE accounts SET balance = balance - $1 ...", amount, from_id)
+      await conn.execute("UPDATE accounts SET balance = balance + $1 ...", amount, to_id)
+
+Money transfer bugs: no transaction, float for money (use Decimal/paise), no balance check, no ID validation.
+
+REDIS — CACHING
+---------------
+RAM-based. 100-1000x faster than disk DB. For hot, frequently-read data.
+
+  cached = r.get("key")
+  if cached: return json.loads(cached)
+  result = await db.fetch(...)
+  r.setex("key", 300, json.dumps(result))   # expire after 5 min
+
+Cache invalidation: on DB write → DELETE Redis key. Next read forces fresh fetch.
+Write-through: write DB + cache together. Write-back: cache first, DB async (risk: data loss).
+For financial data: always write-through.
+
+REDIS — RATE LIMITING
+---------------------
+  current = r.incr(f"rate:{user_id}")     # atomic
+  if current == 1: r.expire(key, 60)      # first request: set 60s window
+  return current <= 100
+
+REDIS — STREAMS (job queues for agents)
+----------------------------------------
+Pub/sub loses messages if no subscriber. Streams persist until acknowledged.
+
+  # producer
+  r.xadd("agent_jobs", {"user": "Rudra", "msg": "show stats"})
+
+  # worker
+  r.xgroup_create("agent_jobs", "workers", id="0", mkstream=True)  # once at startup
+  while True:
+      jobs = r.xreadgroup("workers", "worker-1", {"agent_jobs": ">"}, count=1, block=5000)
+      if jobs:
+          stream, messages = jobs[0]
+          for msg_id, data in messages:
+              process(data)
+              r.xack("agent_jobs", "workers", msg_id)   # acknowledge AFTER success
+
+xack: until called, job in "pending" state. Worker crash before ack → job stays, reclaimed.
+Worker math: ceil(N_jobs / floor(max_wait_seconds / job_duration)) = workers needed
+
+INTERVIEW Q&A
+-------------
+Q: DB CPU at 8% but responses are slow. Where's the bottleneck?
+A: Upstream. Coroutines suspended at pool.acquire(). Pool too small.
+   Fix: increase max_size. Or Redis cache to reduce total DB queries.
+
+Q: Why use Streams over pub/sub for agent job queues?
+A: Streams persist messages until acknowledged. Worker crash before ack = job
+   stays in pending, another worker reclaims it. Pub/sub loses the job permanently.
+
+================================================================================

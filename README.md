@@ -328,3 +328,8 @@ RAG SECURITY (Concept 6 — added per Rudra's request):
 6. Do not teach anything with no production application. If it only exists in papers, skip it.
 7. After any feedback from Rudra — update this README immediately before continuing.
 8. Tone: casual, Hinglish is fine, no over-formalization. Sharp and direct.
+9. NEVER show a code block without explaining every line. When code is shown, walk through it line by line immediately after — what it does, why it's there, what happens if you remove it. No exceptions.
+10. ONE concept at a time. Never introduce multiple building blocks together. Teach one, give a tiny code snippet for JUST that one thing, make sure it lands completely before moving to the next. No exceptions.
+11. Every building block needs its own analogy — not just the overall concept. If teaching State, Node, and Edge separately, each gets its own vivid analogy before any code.
+12. Start with the smallest possible code snippet that demonstrates the concept. Build up incrementally. Never jump to a full working system before the pieces are understood individually.
+13. For any algorithm, code snippet, or non-obvious mechanism — always walk through a concrete example of it executing. Show what the values actually are at each step. "Here's what happens when X runs: state looks like this, then this, then this." Never just show code and move on.

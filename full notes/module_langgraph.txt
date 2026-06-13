@@ -1,0 +1,348 @@
+================================================================================
+MODULE — LANGGRAPH + AGENTIC SYSTEMS
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-13
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: WHAT LANGGRAPH SOLVES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LangChain = linear chain. Input → Step 1 → Step 2 → Output. No loops, no branching.
+Real agents need cycles — think, act, observe, retry, branch. That's a graph.
+
+LangGraph = framework for building agents as directed graphs.
+  Nodes  = Python functions (the work)
+  Edges  = transitions between nodes (the routing)
+  State  = shared memory that travels through the entire graph
+
+AGENT vs CHATBOT
+----------------
+  Chatbot: user message → LLM → response. One shot.
+  Agent:   user message → LLM → tool call → observe result → LLM → tool call
+           → ... repeat until goal reached or max iterations hit.
+
+  Agent = LLM + tools + ReAct loop + memory.
+
+ReAct LOOP
+----------
+  Thought  → "I need to find Shopify revenue for client X"
+  Action   → calls fetch_shopify_revenue(client_id="altagic-001")
+  Observe  → "₹1,20,000 this week"
+  Thought  → "I have the data. I can answer now."
+  Answer   → "Client X's revenue this week is ₹1,20,000."
+
+  Loop continues until: goal reached OR max_iterations hit OR explicit END.
+
+AGENT FAILURE MODES
+-------------------
+  Infinite loop      → same tool called repeatedly. Fix: max_iterations in state.
+  Context explosion  → each tool result appended to messages. 20 calls × 2k = 40k tokens.
+                       Fix: summarize tool results before appending.
+  Wrong tool called  → bad tool description. Fix: rewrite description, add "NOT for X".
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: STATE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+State = the shared whiteboard. Every node reads from it and writes to it.
+It travels through the entire graph. Lives for the duration of one graph run.
+
+  from typing import TypedDict
+
+  class AgentState(TypedDict):
+      query: str
+      context: list
+      answer: str
+      attempts: int
+
+TypedDict vs Pydantic:
+  TypedDict = zero runtime validation. Just editor hints. Plain dict under the hood.
+  LangGraph uses TypedDict because it merges partial updates constantly.
+  Pydantic would require reconstructing the full model on every node update.
+
+REDUCER PATTERN
+---------------
+  from typing import Annotated
+  import operator
+
+  class AgentState(TypedDict):
+      messages: Annotated[list, operator.add]  # append, don't overwrite
+
+  Without reducer: last write wins. Node A writes ["msg1"], Node B writes ["msg2"]
+  → state has ["msg2"]. Node A's write is lost.
+  With operator.add reducer: state has ["msg1", "msg2"]. Both preserved.
+  Use for chat history. Don't use for single-value fields like answer, attempts.
+
+INITIAL STATE
+-------------
+  app.invoke({"query": "show revenue", "attempts": 0})
+  LangGraph takes this dict, treats it as AgentState, passes as `state` to nodes.
+  You don't instantiate AgentState() yourself — LangGraph does it internally.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: NODES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A node is a Python function. Takes state, returns dict of ONLY what changed.
+LangGraph merges the returned dict back into state.
+
+  def retrieve_node(state: AgentState) -> dict:
+      chunks = retrieve(state["query"])       # read from state
+      return {"context": chunks}              # write only what changed
+
+  async def generate_node(state: AgentState) -> dict:
+      context = state["context"]
+      answer = await call_llm(state["query"], context)
+      return {
+          "answer": answer,
+          "attempts": state["attempts"] + 1   # increment here, not in retrieve
+      }
+
+WHY increment in generate not retrieve:
+  One full attempt = retrieve + generate together.
+  Incrementing in retrieve would count retrieval failures as attempts
+  even if the LLM never ran. Increment after the full cycle completes.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: EDGES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Normal edge — always goes to same node:
+  graph.add_edge("retrieve", "generate")
+
+Conditional edge — reads state, returns string, string maps to next node:
+  def should_continue(state: AgentState) -> str:
+      if state["answer"] == "INSUFFICIENT_CONTEXT" and state["attempts"] < 3:
+          return "retry"
+      return "done"
+
+  graph.add_conditional_edges(
+      "generate",               # from this node
+      should_continue,          # run this after generate completes
+      {"retry": "retrieve",     # if "retry" → go to retrieve
+       "done": END}             # if "done" → stop
+  )
+
+  should_continue is sync def, not async — no I/O, just reading state.
+  If it returns a string not in the map → KeyError crash.
+  Always have a default case.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: FULL GRAPH SKELETON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  from langgraph.graph import StateGraph, END
+
+  graph = StateGraph(AgentState)          # 1. create graph with state schema
+  graph.add_node("retrieve", retrieve_node)  # 2. add nodes (label, function)
+  graph.add_node("generate", generate_node)
+  graph.set_entry_point("retrieve")       # 3. which node runs first
+  graph.add_edge("retrieve", "generate") # 4. normal edge
+  graph.add_conditional_edges(           # 5. conditional edge (the loop)
+      "generate", should_continue, {"retry": "retrieve", "done": END}
+  )
+  app = graph.compile()                  # 6. validate + build runnable
+
+  result = app.invoke({"query": "...", "attempts": 0})
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: ASYNC NODES + PARALLEL CALLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Async node — add async def, await I/O calls, run with ainvoke:
+  async def retrieve_node(state: AgentState) -> dict:
+      chunks = await retrieve(state["query"])
+      return {"context": chunks}
+
+  result = await app.ainvoke({"query": "...", "attempts": 0})
+
+Parallel calls inside a node — when two I/O calls are independent:
+  async def retrieve_node(state: AgentState) -> dict:
+      shopify, meta = await asyncio.gather(
+          fetch_shopify(state["client_id"]),
+          fetch_meta(state["client_id"])
+      )
+      return {"context": [shopify, meta]}
+
+  Sequential: 1.2s + 1.2s = 2.4s
+  Parallel:   max(1.2s, 1.2s) = 1.2s — half the latency
+
+PARALLEL WORKER PATTERN (multi-agent)
+--------------------------------------
+  Which to parallelize: tasks with NO dependency on each other.
+  Memory read + Retrieval read → parallel (both are reads, neither needs the other)
+  Generation → sequential after both (needs output from both)
+
+  memory_result, retrieval_result = await asyncio.gather(
+      memory_agent.ainvoke({"query": state["query"]}),
+      retrieval_agent.ainvoke({"query": state["query"]})
+  )
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: CHECKPOINTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After every node completes, LangGraph serializes full state to storage.
+Crash mid-run → resume from last completed node, not from the start.
+
+  from langgraph.checkpoint.aiosqlite import AsyncSqliteSaver
+
+  async with AsyncSqliteSaver.from_conn_string("checkpoints.db") as checkpointer:
+      app = graph.compile(checkpointer=checkpointer)
+      config = {"configurable": {"thread_id": "user-rudra-001"}}
+
+      # first run — crashes after node 2
+      await app.ainvoke({"query": "...", "attempts": 0}, config=config)
+
+      # resume — pass None as input, same thread_id
+      await app.ainvoke(None, config=config)
+      # LangGraph loads last checkpoint, runs from node 3. Nodes 1-2 don't re-run.
+
+WHAT A CHECKPOINT CONTAINS
+---------------------------
+  {
+    "id": "1718000000000-0",      # timestamp-based unique ID
+    "channel_values": {            # this IS your state
+        "query": "show revenue",
+        "attempts": 1,
+        ...
+    },
+    "next": ["generate"],          # which node runs next
+    "metadata": {"step": 1}
+  }
+
+  Checkpoint saved AFTER node completes. Node crashed mid-run = no checkpoint for it.
+  On resume: find last checkpoint → load state → run `next` node from start.
+
+THREAD ISOLATION (multi-tenancy)
+---------------------------------
+  config_rudra = {"configurable": {"thread_id": "user-rudra-001"}}
+  config_priya = {"configurable": {"thread_id": "user-priya-002"}}
+
+  Completely isolated. 1000 users = 1000 thread IDs. One compiled graph serves all.
+
+STORAGE BACKENDS
+----------------
+  AsyncSqliteSaver  →  local dev only. No horizontal scaling.
+  AsyncRedisSaver   →  production. Fast, TTL support, expires old threads automatically.
+  AsyncPostgresSaver→  production + audit trail. Durable, queryable, slower writes.
+
+INSPECTING STATE (production debugging)
+----------------------------------------
+  state = await app.aget_state(config)
+  print(state.values)   # full state at current checkpoint
+  print(state.next)     # which node runs next
+
+  async for checkpoint in app.aget_state_history(config):
+      print(checkpoint.values)   # time-travel: every state the graph ever had
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 8: HUMAN IN THE LOOP (HITL)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Pause the graph at a specific node. Wait for human input. Resume with that input.
+
+  app = graph.compile(
+      checkpointer=checkpointer,
+      interrupt_before=["send_whatsapp"]   # pause BEFORE this node
+  )
+
+WHAT HAPPENS INTERNALLY
+------------------------
+  1. generate_node completes → checkpoint saved with next=["send_whatsapp"]
+  2. LangGraph sees interrupt_before → raises GraphInterrupt internally
+  3. ainvoke catches it → returns cleanly (no crash, no error)
+  4. Graph is suspended. State is saved. Waiting.
+
+  Your code: show the draft to human. Human reviews, edits, approves.
+
+  # Human edits and approves:
+  await app.aupdate_state(config, {"report": "corrected report here"})
+  # aupdate_state: loads latest checkpoint, applies new values, saves new checkpoint
+
+  await app.ainvoke(None, config=config)
+  # resumes from send_whatsapp with the corrected report in state
+
+FULL TIMELINE
+-------------
+  fetch_data runs      → checkpoint saved
+  generate_report runs → checkpoint saved → PAUSE (interrupt_before)
+  human reviews draft  → edits report     → aupdate_state
+  human approves       → ainvoke(None)    → send_whatsapp runs
+
+USE CASE IN ALTAGIC
+--------------------
+  Before sending weekly report to client via WhatsApp:
+  Agent pauses → you review the report in dashboard → approve → agent sends.
+  One line: interrupt_before=["send_whatsapp"]
+
+CRASH RECOVERY WITH HITL
+--------------------------
+  User A: paused waiting for human approval. Server restarts.
+  → Checkpoint exists at pause point. Still waiting. Server restart irrelevant.
+
+  User B: mid-run at generate_node when server crashes.
+  → Checkpoint exists after retrieve (last completed node).
+  → On retry: resumes at start of generate_node. Retrieve doesn't re-run.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 9: MULTI-AGENT ARCHITECTURES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+One agent doing everything → huge prompt, context exhaustion, one failure kills all.
+Multi-agent → each agent does one thing well. Orchestrator coordinates.
+
+ORCHESTRATOR-WORKER PATTERN
+----------------------------
+  Orchestrator: breaks task into subtasks, delegates to workers, collects results.
+  Workers: each compiled as a separate graph. Called by orchestrator nodes.
+
+  async def analyze_node(state: OrchestratorState) -> dict:
+      result = await worker.ainvoke({"task": f"Analyze: {state['query']}"})
+      return {"analysis": result["result"]}
+
+  Each worker has its own fresh context. One worker failure = retry just that worker.
+
+BENEFITS vs ONE AGENT
+---------------------
+  One agent:     one huge prompt, context fills fast, one failure = total failure
+  Multi-agent:   small focused prompts, independent contexts, isolated failures
+
+WHEN TO PARALLELIZE
+--------------------
+  Two tasks with no dependency → run in parallel.
+  Two tasks where B needs A's output → sequential.
+
+  Cascade AI: Memory read + Retrieval → parallel (both reads, independent)
+              Generation → sequential (needs output from both)
+
+PRODUCTION BUGS
+---------------
+  BUG                                      FIX
+  ─────────────────────────────────────────────────────────────────────────
+  No max_iterations guard                  Track attempts in state, check in edge fn
+  Context explosion from tool results      Summarize results before appending
+  Conditional edge returns unknown string  Always have a default return case
+  Sync blocking call in async node         Use async def + await everywhere
+  Thread ID collision between users        Use uuid4() per conversation
+  Checkpoint storage grows unbounded       Redis TTL or scheduled cleanup job
+
+INTERVIEW LINE
+--------------
+"LangGraph models agents as directed graphs — nodes are Python functions,
+edges define routing, state is a TypedDict that travels through the graph.
+Conditional edges enable the ReAct loop: generate → check if done → retry
+retrieve if not. Checkpointing saves state after every node, enabling crash
+recovery and HITL. In production I always set max_iterations in state and
+guard against context explosion by summarizing large tool results."
+
+================================================================================

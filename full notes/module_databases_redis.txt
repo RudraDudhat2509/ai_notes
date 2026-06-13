@@ -1,0 +1,256 @@
+================================================================================
+MODULE — DATABASES + REDIS
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-13
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: CONNECTION POOLING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE PROBLEM
+-----------
+Establishing a DB connection = TCP handshake + auth + credential verification.
+100-300ms overhead. If you do this per request at 1000 req/s = disaster.
+
+THE FIX — CONNECTION POOL
+--------------------------
+Create N connections at startup. Keep them alive. Reuse them.
+Every request borrows a connection, uses it, returns it.
+
+  import asyncpg
+
+  pool = await asyncpg.create_pool(
+      dsn="postgresql://user:pass@localhost/db",
+      min_size=5,     # always keep 5 connections alive
+      max_size=20,    # never exceed 20 connections
+  )
+
+  async def get_user(user_id: int):
+      async with pool.acquire() as conn:   # borrow a connection
+          return await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
+      # connection automatically returned to pool here
+
+WHAT HAPPENS UNDER THE HOOD
+----------------------------
+  100 concurrent requests. Pool has 20 connections.
+  First 20 requests: each gets a connection immediately.
+  Requests 21-100: call `await pool.acquire()` → SUSPEND (not block).
+  Event loop runs other work. When a connection is returned, next
+  suspended coroutine is RESUMED and gets the connection.
+
+  Key: "suspended" not "blocked". Thread is free. Event loop keeps running.
+
+DIAGNOSIS — DB CPU AT 8% BUT SLOW RESPONSES
+--------------------------------------------
+  DB idle = problem is BEFORE the DB.
+  Requests are queued waiting for pool.acquire() — pool too small.
+  Fix: increase max_size. Or add Redis cache to reduce DB hits.
+
+  Diagnosis first, solution second. Never optimize before you know the cause.
+
+INTERVIEW LINE
+--------------
+"If DB CPU is low but responses are slow, I look upstream — likely pool
+exhaustion. Coroutines are suspended at pool.acquire() waiting for a
+connection. Fix is increasing pool size or caching hot queries in Redis
+to reduce total DB load."
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: INDEXES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS
+----------
+A separate data structure (B-tree by default) that maps column values
+to row locations. Like a book's index — you find "Bearer tokens → page 198"
+instead of reading every page.
+
+WITHOUT INDEX: full table scan. Every row checked. O(n). Slow on 10M rows.
+WITH INDEX: jump directly to matching rows. O(log n). Fast regardless of size.
+
+  CREATE INDEX idx_users_email ON users(email);
+
+B-TREE INTERNALS (what you need to know)
+-----------------------------------------
+  Sorted tree structure. Search = binary search down the tree.
+  10M rows = ~23 comparisons to find any value. Always.
+  Supports: =, <, >, BETWEEN, ORDER BY, LIKE 'prefix%'
+  Does NOT help: LIKE '%suffix' (can't use sorted structure)
+
+TRADEOFFS
+---------
+  Reads faster. Writes slower (index must be updated on INSERT/UPDATE).
+  Primary keys have indexes automatically — never add one manually.
+  Add indexes on columns you filter/sort by frequently.
+  Selective indexes: index (client_id, date) for queries that filter both.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: N+1 PROBLEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS
+----------
+  1 query to get N records, then N more queries for each record's related data.
+  Total: N+1 queries. Scales terribly.
+
+  BAD:
+    users = await db.fetch("SELECT * FROM users")           # 1 query
+    for user in users:
+        orders = await db.fetch(                            # N queries
+            "SELECT * FROM orders WHERE user_id = $1", user["id"]
+        )
+
+  GOOD (JOIN):
+    rows = await db.fetch("""
+        SELECT users.name, orders.product, orders.amount
+        FROM users
+        JOIN orders ON orders.user_id = users.id
+    """)                                                    # 1 query
+
+The DB is optimized for JOINs. Let it do the work.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: TRANSACTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS
+----------
+A group of operations that either ALL succeed or ALL fail. No partial state.
+
+  async with pool.acquire() as conn:
+      async with conn.transaction():
+          await conn.execute("UPDATE accounts SET balance = balance - $1 WHERE id = $2", 500, from_id)
+          await conn.execute("UPDATE accounts SET balance = balance + $1 WHERE id = $2", 500, to_id)
+          # if second line fails → BOTH are rolled back. No money lost.
+
+ACID PROPERTIES (what they actually mean)
+------------------------------------------
+  Atomic    →  all or nothing. No partial writes.
+  Consistent→  DB goes from one valid state to another. Constraints upheld.
+  Isolated  →  concurrent transactions don't see each other's uncommitted data.
+  Durable   →  committed data survives crashes (written to disk).
+
+MONEY TRANSFER BUGS (code review must-catch)
+--------------------------------------------
+  1. No transaction         →  money disappears if second UPDATE fails
+  2. float for amount       →  0.1 + 0.2 = 0.30000000000004. Use Decimal or integer paise
+  3. No balance check       →  balance goes negative
+  4. No ID validation       →  transferring to/from non-existent accounts
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: REDIS — CACHING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS
+----------
+Redis lives in RAM. PostgreSQL lives on disk. RAM is 100-1000x faster.
+Redis is for data you need RIGHT NOW, very fast. Not everything — RAM is small.
+
+CACHING PATTERN
+---------------
+  async def get_top_clients():
+      cached = r.get("top_clients")
+      if cached:
+          return json.loads(cached)              # RAM hit: <1ms
+
+      result = await db.fetch("SELECT ... expensive query ...")
+      r.setex("top_clients", 300, json.dumps(result))  # cache for 5 min
+      return result
+
+  setex(key, ttl_seconds, value) — set with expiry. Auto-deleted after TTL.
+
+CACHE INVALIDATION
+------------------
+  Data changes in DB. Redis still serves stale version.
+  Fix: on DB write, DELETE the Redis key. Next request forces fresh fetch.
+
+  Strategies:
+    Cache-aside    →  app checks cache, miss → hit DB → populate cache
+    Write-through  →  write to DB and cache simultaneously (consistent, slower writes)
+    Write-back     →  write to cache first, sync to DB async (fast writes, data loss risk)
+
+  For financial data → always write-through. Never write-back.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: REDIS — RATE LIMITING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  async def check_rate_limit(user_id: str) -> bool:
+      key = f"rate:{user_id}"
+      current = r.incr(key)          # atomic increment, returns new value
+      if current == 1:
+          r.expire(key, 60)          # first request this window: set 60s TTL
+      return current <= 100          # True = allowed, False = blocked
+
+  incr is atomic — no race conditions even with 1000 concurrent users.
+  After 60 seconds, key expires, counter resets automatically.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: REDIS — JOB QUEUES WITH STREAMS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY NOT PUB/SUB FOR JOBS
+------------------------
+  Pub/sub: if no subscriber is running when message published → message GONE.
+  For agent jobs, that's data loss. Use Redis Streams instead.
+
+STREAMS PATTERN
+---------------
+  # Producer — webhook handler (fast, returns immediately)
+  r.xadd("agent_jobs", {"user": "Rudra", "message": "show stats"})
+
+  # Worker — runs forever as background process
+  r.xgroup_create("agent_jobs", "workers", id="0", mkstream=True)  # run once at startup
+
+  while True:
+      jobs = r.xreadgroup("workers", "worker-1", {"agent_jobs": ">"}, count=1, block=5000)
+      if jobs:
+          stream, messages = jobs[0]
+          for msg_id, data in messages:
+              process(data)
+              r.xack("agent_jobs", "workers", msg_id)  # acknowledge AFTER success
+
+LINE BY LINE
+------------
+  xgroup_create — creates a consumer group. One group = N workers sharing a queue.
+                  Each message goes to exactly ONE worker.
+  id="0"       — start from beginning of stream
+  mkstream=True— create stream if it doesn't exist yet
+  ">"          — only give me messages no other worker has seen
+  block=5000   — wait up to 5s for a job before returning None (no busy loop)
+  xack         — mark job complete. Until acked, job stays in "pending" state.
+                 If worker crashes before ack → message stays, another worker reclaims it.
+
+FAILURE MODES
+-------------
+  Pending entries: worker crashes mid-job. Message stuck in pending forever.
+  Fix: monitor for messages pending >60s, re-assign to another worker.
+
+  Stream grows forever: old processed messages stay. Cap with MAXLEN:
+  r.xadd("agent_jobs", {"data": "..."}, maxlen=10000)
+
+AGENT QUEUE ARCHITECTURE (Altagic)
+------------------------------------
+  WhatsApp webhook → xadd to "agent_jobs" → return 200 immediately
+  Worker picks up → fetches Shopify + Meta → generates report
+  Result → xadd to "agent_results" → notify user via WhatsApp
+
+  Worker count math: N jobs × T seconds per job / max_wait_seconds = workers needed
+  Example: 20 clients × 8s jobs, want <30s → each worker handles 3 jobs (3×8=24s<30s)
+           ceil(20/3) = 7 workers needed
+
+INTERVIEW LINE
+--------------
+"I use Redis Streams over pub/sub for job queues because streams persist
+messages until explicitly acknowledged. Worker crash before ack = job
+stays in pending, another worker reclaims it. Pub/sub would lose the job
+permanently. The xack pattern gives me at-least-once delivery guarantee."
+
+================================================================================
