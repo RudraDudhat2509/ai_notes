@@ -1,0 +1,90 @@
+================================================================================
+SYSTEM DESIGN — QUICK REFERENCE
+================================================================================
+
+THE FRAMEWORK (always in order)
+---------------------------------
+1. Clarify — scale, read/write ratio, consistency needs, latency
+2. Estimate — back-of-envelope math before picking components
+3. API — sync or async? what goes in/out?
+4. Components — which building blocks?
+5. Deep dive — walk through the hard part
+6. Tradeoffs — what did you give up?
+
+THE SIX BUILDING BLOCKS
+------------------------
+Load Balancer    → distributes traffic. Strategies: round robin, least conn, IP hash
+Cache (Redis)    → fast in-memory store. Patterns: cache-aside, write-through, write-back
+Message Queue    → async jobs. Producer pushes, consumer pulls. Crash-safe.
+Database         → persistent truth. Index → replica → shard (in that order)
+CDN              → static assets at the edge. TTL controls staleness.
+API Gateway      → auth + rate limiting + routing in one place (Portkey.ai = AI gateway)
+
+THREE PROPERTIES
+-----------------
+Availability    → uptime. Redundancy + health checks.
+Scalability     → vertical (bigger box) vs horizontal (more boxes)
+Consistency     → strong (banks) vs eventual (social feeds)
+
+CAP THEOREM
+-----------
+Network partition forces a choice:
+  C = refuse requests until nodes agree (PostgreSQL)
+  A = serve requests even if stale (Cassandra, DynamoDB)
+Pick based on domain. Finance = C. Feed = A.
+
+DATABASE SCALING ORDER
+-----------------------
+1. Index          → O(n) → O(log n). Cost: write overhead.
+2. Read replicas  → offload SELECT to copies. Lag: ms behind primary.
+3. Vertical       → bigger primary. Has ceiling.
+4. Sharding       → split by shard key. Use consistent hashing for shard routing.
+
+CONSISTENT HASHING
+------------------
+Servers on a ring. Hash key → position → walk clockwise to server.
+Adding/removing server: only ~1/N of keys move. Not all of them.
+Without it: adding a server reshuffles most keys.
+
+WORKER POOL MATH
+-----------------
+jobs_per_worker = time_window / job_duration
+workers = ceil(total_jobs / jobs_per_worker)
+Example: 10k jobs, 8s each, 2h window → 7200/8 = 900/worker → ceil(10k/900) = 12
+
+CRASH RECOVERY
+--------------
+in_progress[job_id] = (job, timestamp)
+Reaper thread: find jobs where now - timestamp > threshold → re-enqueue
+Redis equivalent: Pending Entries List → xclaim stale messages
+
+RATE LIMITING EXTERNAL APIs
+----------------------------
+Per-store limit (e.g., Shopify 2 req/s): each client is independent
+10k clients × 2 req/s = 20k req/s total capacity
+Enforce with: Redis INCR per client_id + exponential backoff on 429
+
+AI AGENT AT SCALE (Altagic)
+-----------------------------
+Cron → API Gateway → Redis Streams (10k jobs) → 12 workers
+Each worker: cache check → Shopify (rate limited) → LLM → PDF → CDN → WhatsApp
+Failure handling: reaper (crash), backoff (429), fallback template (LLM timeout)
+
+INTERVIEW Q&A
+--------------
+Q: Same user → same server. Which strategy?
+A: IP hash
+
+Q: 10k reports async. Which building block?
+A: Message queue
+
+Q: Writes still slow after read replicas. Next?
+A: Shard by client_id + consistent hashing
+
+Q: Worker crashed mid-job. Recovery?
+A: Reaper checks in_progress timestamps, re-enqueues stale jobs
+
+Q: Adding shard to consistent hashing vs plain modulo?
+A: Consistent hashing: ~1/N keys move. Plain modulo: most keys reshuffle.
+
+================================================================================

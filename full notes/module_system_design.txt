@@ -1,0 +1,243 @@
+================================================================================
+MODULE — SYSTEM DESIGN
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-13
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THE FRAMEWORK — HOW TO ANSWER ANY SYSTEM DESIGN QUESTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Six steps. Always in this order.
+
+1. CLARIFY — ask before designing
+   - How many users / requests per second?
+   - Read-heavy or write-heavy?
+   - Consistency requirements? (bank = strict, social feed = eventual)
+   - Latency requirements? (< 100ms? < 1s?)
+   Never skip this. Designing without constraints = designing nothing.
+
+2. ESTIMATE — back-of-envelope math
+   - 10k clients × 8s/report = need workers that can handle 80,000s of work
+   - 1M requests/day = ~12 req/s average, ~120 req/s peak (10x rule)
+   - 1KB per record × 1M records = 1GB storage
+   Size the system before picking components.
+
+3. API — define the interface
+   - What endpoints exist?
+   - What goes in, what comes out?
+   - Sync (return result) or async (return job_id, poll later)?
+
+4. COMPONENTS — draw the boxes
+   - What building blocks do you need?
+   - Load balancer, cache, message queue, database, CDN, API gateway?
+   - How do they connect?
+
+5. DEEP DIVE — pick the hard parts
+   - Interviewer will ask: "walk me through how X works"
+   - Go deep on: database schema, queue worker logic, cache invalidation, failure handling
+
+6. TRADEOFFS — state what you gave up
+   - Every choice has a cost. Name it.
+   - "I chose eventual consistency over strong consistency — that means users might see stale data for ~1s"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THE SIX CORE BUILDING BLOCKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. LOAD BALANCER
+   Distributes incoming requests across multiple servers.
+   Strategies:
+     - Round robin: server 1, 2, 3, 1, 2, 3...
+     - Least connections: send to whoever has fewest active requests
+     - IP hash: same user → same server (session stickiness)
+   Use when: one server can't handle all traffic alone.
+
+2. CACHE (Redis / Memcached)
+   Fast in-memory store. Sits in front of database.
+   Patterns:
+     - Cache-aside: app checks cache first, on miss reads DB and writes cache
+     - Write-through: write to cache AND DB at same time (consistent, slower writes)
+     - Write-back: write to cache, flush to DB later (fast writes, data loss risk)
+   Use when: same data read repeatedly, database is the bottleneck.
+   Cost: stale data. Always ask "how stale is acceptable?"
+
+3. MESSAGE QUEUE (Redis Streams / Kafka / SQS)
+   Async task processing. Producer pushes job, consumer pulls and processes.
+   Use when: request takes too long to process synchronously.
+   Pattern: webhook arrives → enqueue → return 200 → worker processes → notify user
+   Guarantee: if worker crashes, job stays in queue (not lost).
+   Redis Streams specifics: xadd (push), xreadgroup (claim), xack (complete), xpending (stuck jobs)
+
+4. DATABASE (PostgreSQL / Firestore)
+   Persistent storage. The source of truth.
+   Key concepts:
+     - Index: B-tree structure, turns O(n) scan into O(log n) lookup. Add on columns you filter by.
+     - N+1: fetching 100 users then querying orders per user = 101 queries. Fix: JOIN.
+     - Transaction: multiple operations that succeed or fail together (ACID).
+     - Connection pool: reuse DB connections instead of opening a new one per request.
+   Read scaling: add read replicas (copies of primary, handle SELECT only).
+   Write scaling: sharding — split data across multiple DBs by a shard key (client_id).
+
+5. CDN (Content Delivery Network)
+   Caches static assets (images, JS, CSS) at edge servers near users.
+   Use when: serving static files globally. Not for dynamic API responses.
+   Cost: cached content can be stale. Set appropriate TTL.
+
+6. API GATEWAY
+   Single entry point. Handles: auth, rate limiting, routing, logging.
+   Portkey.ai is literally an AI API gateway — routes to different LLM providers,
+   adds semantic caching, tracks cost per request.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THREE KEY PROPERTIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+AVAILABILITY
+System responds even when parts fail. Measured in nines (99.9% = 8.7h downtime/year).
+Achieved by: redundancy, load balancers, health checks, auto-restart.
+
+SCALABILITY
+Handle more load by adding resources.
+  - Vertical: bigger server (CPU, RAM). Simple, but has a ceiling.
+  - Horizontal: more servers. Complex (need LB + stateless services), but unlimited.
+
+CONSISTENCY
+All users see the same data at the same time.
+  - Strong: every read sees the latest write. Slower (coordination overhead).
+  - Eventual: reads may see stale data for a short time. Faster (no coordination).
+  Bank transfers = strong. Twitter feed = eventual.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CAP THEOREM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In a distributed system, when a network partition happens, you must choose:
+  - Consistency (C): refuse requests until all nodes agree
+  - Availability (A): serve requests even if nodes disagree
+
+You cannot have both during a partition. Pick one.
+
+  PostgreSQL → CP (chooses consistency over availability)
+  Cassandra / DynamoDB → AP (chooses availability over consistency)
+  Firestore → tunable (you pick per-operation)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DATABASE SCALING PATTERNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STEP 1: Add indexes
+  First fix. Costs: write overhead (index must update on every write), extra storage.
+
+STEP 2: Read replicas
+  Primary handles all writes. Replicas handle reads.
+  Lag: replicas are ~milliseconds behind primary. Reads may be slightly stale.
+  Use when: read:write ratio is high (reporting dashboards, analytics).
+
+STEP 3: Vertical scaling
+  More RAM/CPU on the primary. Simple. Works until you hit the machine ceiling.
+
+STEP 4: Sharding (horizontal partitioning)
+  Split data across multiple databases by a shard key.
+  Example: clients 0-3333 → DB1, 3334-6666 → DB2, 6667-10000 → DB3
+  Problem: add a 4th DB and you have to move half the data.
+  Solution: consistent hashing.
+
+CONSISTENT HASHING
+  Put servers on a ring (0 to 2^32). Hash each key → position on ring.
+  Walk clockwise to find which server owns it.
+  Add a server: only the keys between it and its predecessor move.
+  Remove a server: only its keys move to the next server clockwise.
+  Adding DB4 only moves ~25% of keys, not 75%.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WORKER POOL SIZING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Formula:
+  jobs_per_worker = time_window / job_duration
+  workers_needed = total_jobs / jobs_per_worker
+
+Example: 10,000 reports, 8s each, must finish in 2h (7200s)
+  jobs_per_worker = 7200 / 8 = 900
+  workers_needed = 10,000 / 900 = 11.11 → round up → 12 workers
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRASH RECOVERY PATTERN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Worker picks up job → record (job, timestamp) in in_progress
+2. Worker processes job → calls complete() → job removed from in_progress
+3. Worker crashes → complete() never called → job stays in in_progress with old timestamp
+4. Reaper thread runs every N seconds → get_stuck_jobs(older_than=30s)
+5. Stale jobs re-enqueued
+
+In Redis Streams: same pattern. xreadgroup claims job. xack completes it.
+Pending Entries List = in_progress dict. xclaim = get_stuck_jobs + re-enqueue.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RATE LIMITING AT SCALE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+External API rate limits (e.g., Shopify: 2 req/s per store):
+  - Rate limit is PER STORE — 10k clients = 10k independent buckets
+  - Total capacity: 10,000 × 2 = 20,000 req/s across all clients
+  - Each client needs its own per-client rate limiter (Redis INCR keyed on client_id)
+  - Retry on 429 with exponential backoff
+  - Cache responses → reduce total API calls needed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AI-SPECIFIC SYSTEM DESIGN — ALTAGIC AGENT AT SCALE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Problem: 10,000 clients, weekly reports, all triggered Monday 9am.
+
+Components needed:
+  - API Gateway: receives Monday triggers, applies per-client rate limiting
+  - Message Queue (Redis Streams): 10,000 jobs enqueued at once
+  - Worker Pool (12 workers): pull from queue, process one job each
+  - Per-client rate limiter: throttle Shopify API calls to 2 req/s per client
+  - Cache (Redis): store Shopify + Meta data, avoid redundant API calls
+  - PostgreSQL (sharded by client_id): store report history
+  - Read replicas: dashboard reads, analytics
+  - CDN: serve PDF reports as static files
+  - Reaper thread: detect crashed workers, re-enqueue stuck jobs
+
+Flow:
+  Cron (Monday 9am) → enqueue 10k jobs → 12 workers pull jobs
+  Worker: check cache → if miss, call Shopify (rate limited per client)
+  → generate report → upload PDF to CDN → send WhatsApp + email → complete job
+
+Failure modes and fixes:
+  - Worker crash → reaper re-enqueues (in_progress timeout)
+  - Shopify 429 → exponential backoff + retry
+  - LLM timeout → retry with shorter prompt, fallback to templated report
+  - Queue backlog → add more workers (horizontal scale)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILL IN THE BLANK — TEST YOURSELF
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1. A load balancer routes the same user to the same server using __________ strategy.
+A1. IP hash
+
+Q2. You need to generate 10,000 reports asynchronously. Which building block do you add?
+A2. Message queue (Redis Streams / SQS / Celery)
+
+Q3. PostgreSQL writes are still slow after adding read replicas. Next step?
+A3. Sharding by shard key, with consistent hashing for routing
+
+Q4. 10,000 clients, 8s per report, must finish in 2 hours. How many workers?
+A4. 7200s / 8s = 900 jobs/worker. 10,000 / 900 = 11.11 → 12 workers
+
+Q5. External API rate limit is per-store, not global. 10k clients × 2 req/s each = __ total capacity.
+A5. 20,000 req/s (each client has an independent bucket)
+
+Q6. A worker crashes mid-job. How does the system recover?
+A6. Reaper thread checks in_progress for jobs older than threshold. Re-enqueues them.
+
+Q7. Adding a new shard to a plain modulo-based system requires moving __ of all data.
+    Adding a new shard with consistent hashing requires moving ~__ of all data.
+A7. Most of it (~75% if going from 3→4 shards). ~25% with consistent hashing.
+
+================================================================================
