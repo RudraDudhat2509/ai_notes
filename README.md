@@ -11,6 +11,7 @@
 **Timeline:** Winter 2026 applications — ~4 months away.
 **Target companies:** Portkey.ai, Langfuse, Arize AI, Palantir, Scale AI.
 **Current niche:** General AI engineering (FDE, agentic AI, production reliability). LLM security is a long-term direction, not current positioning.
+**Self-stated ambition:** "The most technical third-year in the world." Path to that = depth + building, not topic-collecting.
 
 ---
 
@@ -23,6 +24,20 @@ Everything taught must serve one of three outcomes:
 3. **Coding without AI** — can write clean Python in an interview cold, without vibe-coding.
 
 **Do NOT teach:** Academic theory with no production application. Math derivations. Concepts that only exist in papers.
+
+---
+
+## THE PHILOSOPHY (the 2026-06-14 reset)
+
+The earlier curriculum collected topics. It went broad and front-loaded AI-specific knowledge on a foundation that hadn't hardened. The reset fixes that.
+
+**Build an engineer in layers, where each layer is load-bearing for the next.**
+You don't learn RAG before you understand how Python holds objects in memory — because when RAG breaks in production, the bug is almost always in the foundation (a mutability trap, a blocking call in an async loop, an unclosed connection). Fix the foundation so everything above it stops being magic.
+
+**Three rules for every topic:**
+1. No topic is "done" until Rudra can build it cold AND explain the internals. Knowing what a dict does ≠ knowing why it's O(1) and when it degrades.
+2. Essential data-structure work is folded INTO foundations (not a separate LeetCode grind). Light problems tied to the current topic. Rationale: AI-native startups (Portkey/Langfuse/Arize) test systems reasoning over LeetCode; Palantir/Scale do code-screen, so keep a safety net without wasting time.
+3. Every phase ends with ONE integration build that forces the layer to connect to the layer below it.
 
 ---
 
@@ -61,7 +76,7 @@ Everything taught must serve one of three outcomes:
     - **Practicality-heavy** → real-life scenario first, then matching code
 15. ALL code snippets: always show an example run — what goes in, what happens step by step, what comes out.
 
-### Testing
+### Testing (of Rudra's understanding)
 16. After every concept taught → fill-in-the-blank or application question IN the module .txt file.
 17. GATE: after posing a question, output nothing until Rudra answers. No hints, no encouragement.
 18. After Rudra answers → always show sample model answer (what a strong candidate would say in an interview).
@@ -73,76 +88,94 @@ Everything taught must serve one of three outcomes:
 22. Fill-in-the-blank questions go directly in the module .txt file — reference the file when assigning.
 23. Save and push notes + practice files together after each session.
 
+### Cadence (set 2026-06-14)
+24. **Deep, one topic per session.** Slower, but nothing floats. This is the chosen default.
+25. Light data-structure problem tied to the current topic where it fits naturally. No separate grind track.
+
 ---
 
-## KNOWLEDGE CALIBRATION (as of 2026-06-13)
+## KNOWLEDGE CALIBRATION (as of 2026-06-14)
 
 | Topic | Level | Notes |
 |---|---|---|
-| Async Python | **Strong** | Event loop, coroutines, gather, queues, retry |
-| Pydantic + FastAPI | **Strong** | BaseModel, Depends, lifespan, BackgroundTasks |
-| JWT Auth | **Strong** | Access/refresh tokens, invalidation strategies |
-| Databases | **Strong** | Connection pooling, indexes, N+1, transactions |
-| Redis | **Strong** | Caching, rate limiting, pub/sub, Streams |
-| LLM Fundamentals | **Strong** | Context windows, temperature, fine-tuning vs RAG |
-| RAG | **Strong** | Full pipeline, RAGAS, security |
-| LangGraph | **Strong** | State, nodes, edges, async, checkpointing, HITL, multi-agent |
-| Tool Use | **Strong** | Full cycle, parallel calls, ToolNode |
-| Agent Memory | **Strong** | 4 types, Firestore, memory poisoning + defenses |
-| System Design | **In progress** | Starting now |
-| Concurrency (GIL, threading) | **Not yet covered** | — |
-| Python DSA basics | **Partial** | Rate limiter ✅, LRU cache ✅, job queue in progress |
-| LLM Observability | **Not yet covered** | Langfuse, OTel |
+| Async Python | **Strong (8/10)** | Strongest area. Event loop, coroutines, gather, queues, retry. Missing: Semaphore for concurrency limiting. |
+| Pydantic + FastAPI | **Medium** | Knows pieces, never assembled a full service end-to-end. |
+| JWT Auth | **Done** | Covered. Lower priority for target roles — move on. |
+| Databases | **Shallow-Medium** | Knows patterns (index, N+1, transactions). Missing: real SQL fluency, EXPLAIN, index types, bloat. |
+| Redis | **Medium** | Caching, rate limiting, Streams. Drill consumer groups + distributed locks. |
+| LLM Fundamentals | **Surface** | Knows temperature/context/RAG-vs-FT. Missing: tokenization, attention, inference internals. |
+| RAG | **Medium** | Full pipeline known. Missing: chunking strategies, HyDE, ColBERT, vector DB internals, RAGAS depth. |
+| LangGraph | **Strong** | State, nodes, edges, async, checkpointing, HITL, multi-agent. Drill, don't re-teach. |
+| Tool Use | **Strong** | Full cycle, parallel calls, ToolNode. |
+| Agent Memory | **Medium** | 4 types + poisoning. Poisoning DEPTH deferred to month 3. |
+| System Design | **Framework only (5/10)** | Framework known, NOT drilled. Needs cold timed reps. |
+| **Python object/memory model** | **Not covered** | THE bedrock gap. References, mutability, identity. |
+| **Functions deep** | **Not covered** | Closures, decorators, generators, context managers. |
+| **Concurrency (GIL)** | **Not covered** | #1 gap. GIL, threading vs multiprocessing vs asyncio. |
+| **Testing** | **Not covered** | pytest, mocking, TDD. Red flag if missing. |
+| **SQL (writing it)** | **Not covered** | JOINs, GROUP BY, window functions cold. |
+| **Networking/HTTP** | **Not covered** | TCP, HTTP/1.1 vs /2, WebSockets, gRPC, DNS. |
+| **Docker** | **Not covered** | On resume but never taught conceptually. |
+| **Vector DB internals** | **Not covered** | HNSW, ANN, quantization. |
+| **Observability** | **Not covered** | Langfuse, OTel, eval pipelines. |
+| Data structures (essential) | **Partial** | Rate limiter ✅, LRU ✅, job queue ✅. Folded into foundations going forward. |
 
 ---
 
-## CURRICULUM
+## THE 16-WEEK ROADMAP (the source of truth)
 
-### ✅ Module 1: LLM Fundamentals
-Context windows, temperature/top-p, fine-tuning vs RAG vs prompting, token cost math.
-Notes: `full notes/module_llm_fundamentals.txt` | `quick review/module_llm_fundamentals.txt`
+```
+PHASE 1 — PYTHON + CS BEDROCK          (Weeks 1–4)   ← CURRENT
+PHASE 2 — BACKEND SYSTEMS DEPTH        (Weeks 5–8)
+PHASE 3 — AI ENGINEERING (rebuilt)     (Weeks 9–12)
+PHASE 4 — INTEGRATION + INTERVIEW REPS (Weeks 13–16)
+Essential DS work ───────────────────► folded into every phase, light touch
+```
 
-### ✅ Module 2: Production RAG
-Chunking, embeddings, hybrid retrieval, reranking, RAGAS, RAG security.
-Notes: `full notes/module_rag.txt` | `quick review/module_rag.txt`
+### 🔄 PHASE 1 — PYTHON + CS BEDROCK (Weeks 1–4) — IN PROGRESS
 
-### ✅ Module 3: Async Python
-Event loop, coroutines, httpx, gather/TaskGroup/Queue, timeouts, retry, dead letter queues.
-Notes: `full notes/module_async_python.txt` | `quick review/module_async_python.txt`
+- **Week 1 — Object & memory model + data structure internals.** Names as references, `is` vs `==`, mutability traps, small-int cache, default-arg trap. list/dict/set/tuple internals — how they're built, O(1) vs O(n) per op, hash tables, collisions. ← **START HERE**
+- **Week 2 — Functions like a senior.** Closures, decorators (write `@app.get` from scratch), generators & `yield` (lazy eval, memory), context managers (`__enter__`/`__exit__`).
+- **Week 3 — Concurrency.** The GIL (what it locks, why threading ≠ parallelism for CPU work). threading vs multiprocessing vs asyncio decision tree. Retroactively makes async + job queue make sense.
+- **Week 4 — Testing + error handling.** pytest, fixtures, parametrize, mocking external APIs (`unittest.mock`), TDD, exception design.
+- **Phase 1 gate:** Build a tested CLI tool (e.g. mini task scheduler) using a generator, a decorator, a context manager, proper exceptions. All tests pass. Explains every line.
 
-### ✅ Module 4: FastAPI + Pydantic
-BaseModel, Field, validators, Depends, yield cleanup, BackgroundTasks, lifespan.
-Notes: `full notes/module_fastapi_pydantic.txt` | `quick review/module_fastapi_pydantic.txt`
+### ⏳ PHASE 2 — BACKEND SYSTEMS DEPTH (Weeks 5–8)
+- Week 5 — SQL fluency + DB internals (JOINs, GROUP BY, window fns cold, EXPLAIN ANALYZE, index types, bloat).
+- Week 6 — Redis deep (drill patterns, Streams consumer groups, distributed locks).
+- Week 7 — Networking + HTTP (TCP handshake, HTTP/1.1 vs /2, WebSockets, REST vs gRPC, DNS).
+- Week 8 — FastAPI assembled end-to-end + Docker (one complete service: async DB + Redis + JWT + errors, Dockerized).
+- **Phase 2 gate:** Ship a Dockerized FastAPI service with Postgres backend, tested.
 
-### ✅ Module 5: JWT Auth
-Access/refresh tokens, ExpiredSignatureError, invalidation strategies.
-Notes: `full notes/module_jwt_auth.txt` | `quick review/module_jwt_auth.txt`
+### ⏳ PHASE 3 — AI ENGINEERING, REBUILT (Weeks 9–12)
+- Week 9 — LLM internals (tokenization, attention O(n²), inference mechanics, why semantic caching works).
+- Week 10 — RAG depth (chunking strategies, HyDE, dense vs ColBERT, reranking, RAGAS) + vector DB internals (HNSW, ANN, quantization).
+- Week 11 — Agents (LangGraph drilled, tool use, multi-agent — production focus).
+- Week 12 — Observability (Langfuse tracing, OTel spans, cost tracking, evals).
+- **Phase 3 gate:** Build a traced, evaluated RAG service.
 
-### ✅ Module 6: Databases + Redis
-Connection pooling, indexes, N+1, transactions, caching, rate limiting, Redis Streams.
-Notes: `full notes/module_databases_redis.txt` | `quick review/module_databases_redis.txt`
+### ⏳ PHASE 4 — INTEGRATION + INTERVIEW REPS (Weeks 13–16)
+- **Capstone — Mini Altagic backend.** FastAPI endpoint: JWT → Redis rate-limit → enqueue job → return job_id. Async worker: pull → mock Shopify → Postgres → complete. Crash recovery via reaper. Fully tested, Dockerized, traced. Tests every module at once.
+- System design drilling — one cold, timed whiteboard per session (URL shortener, rate-limiter-as-a-service, notification system, RAG at scale).
+- Mock interviews — interrogate and defend.
 
-### ✅ Module 7: LangGraph + Agentic Systems
-State, nodes, edges, async, checkpointing, HITL, multi-agent architectures.
-Notes: `full notes/module_langgraph.txt` | `quick review/module_langgraph.txt`
+---
 
-### ✅ Module 8: Tool Use + Agent Memory
-Full tool call cycle, parallel tools, ToolNode, 4 memory types, memory poisoning + defenses.
-Notes: `full notes/module_tool_use_agent_memory.txt` | `quick review/module_tool_use_agent_memory.txt`
+## ✅ COMPLETED MODULES (notes on disk)
 
-### 🔄 Module 9: System Design (IN PROGRESS)
-The framework, core building blocks, scalability patterns, AI-specific system design.
-Practice: `practice/01_rate_limiter.py` ✅ | `practice/02_lru_cache.py` ✅ | `practice/03_job_queue.py` (pending)
-Notes: `full notes/module_system_design.txt` (to be written)
+| Module | Status | Notes path |
+|---|---|---|
+| LLM Fundamentals | ✅ (to redo w/ depth in Wk9) | `full notes/module_llm_fundamentals.txt` |
+| Production RAG | ✅ (to redo w/ depth in Wk10) | `full notes/module_rag.txt` |
+| Async Python | ✅ Strong | `full notes/module_async_python.txt` |
+| FastAPI + Pydantic | ✅ (assemble in Wk8) | `full notes/module_fastapi_pydantic.txt` |
+| JWT Auth | ✅ Done | `full notes/module_jwt_auth.txt` |
+| Databases + Redis | ✅ (deepen in Wk5–6) | `full notes/module_databases_redis.txt` |
+| LangGraph | ✅ Strong | `full notes/module_langgraph.txt` |
+| Tool Use + Agent Memory | ✅ | `full notes/module_tool_use_agent_memory.txt` |
+| System Design | ✅ framework (drill in Phase 4) | `full notes/module_system_design.txt` |
 
-### ⏳ Module 10: Python DSA Basics
-Arrays, hashmaps, two pointers, sliding window — enough for startup coding screens.
-
-### ⏳ Module 11: LLM Observability
-Langfuse tracing, OpenTelemetry spans, Arize Phoenix, cost optimization.
-
-### ⏳ Module 12: Concurrency
-Threading vs multiprocessing vs async, GIL explained, when to use each.
+Practice: `practice/01_rate_limiter.py` ✅ | `practice/02_lru_cache.py` ✅ | `practice/03_job_queue.py` ✅
 
 ---
 
