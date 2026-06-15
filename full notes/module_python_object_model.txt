@@ -1,0 +1,202 @@
+================================================================================
+MODULE — PYTHON OBJECT & MEMORY MODEL  (Phase 1, Week 1)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-14
+================================================================================
+
+This is the bedrock. Mutability bugs, is vs ==, accidental mutation in functions,
+the GIL, hashability — ALL of it flows from how Python holds objects in memory.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: A VARIABLE IS A NAME TAG, NOT A BOX
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WRONG model (C-style): x = 5 means "a box named x holds 5".
+RIGHT model (Python):   x = 5 means "stick the label x onto an object 5 that
+                        lives out in memory (the heap)".
+
+- Object  = the actual data. Has a value, a type, and an identity (address).
+- Name    = a label that POINTS to an object. Holds only the pointer.
+- Binding = what "=" does. Binds a name to an object. Does NOT copy a value.
+
+id(obj) = the object's identity (in CPython, its memory address). Your X-ray.
+If two names have the same id(), they point at the EXACT same object.
+
+THE KEY CONSEQUENCE: two name tags can point at one object.
+  a = [1, 2, 3]    # one list at, say, 0x100. 'a' points to it.
+  b = a            # NO copy. copies the POINTER. 'b' also points to 0x100.
+  b.append(4)      # mutates the ONE object at 0x100 -> [1,2,3,4]
+  print(a)         # [1, 2, 3, 4]   <- 'a' sees it; only ever one list
+
+  print(a is b)    # True  -> "is" asks: same object in memory?
+  print(id(a)==id(b))  # True
+
+is  vs  ==
+  is  -> "same object?" (identity / same address)
+  ==  -> "same value?"  (contents match)
+Only real use of `is` in practice: `if x is None:`
+
+FAILURE MODE — silent mutation of a caller's argument:
+  def add_item(items):
+      items.append("new")   # mutates the SAME list the caller passed
+      return items
+  original = ["a","b"]
+  add_item(original)
+  print(original)           # ['a','b','new']  <- caller's list changed!
+
+Python passes a COPY OF THE POINTER ("pass by object reference"), not a copy
+of the object. Fix when you must not mutate input: items = items.copy()
+
+WHY IT MATTERS: in Cascade AI / LangGraph, nodes pass shared state (messages,
+memory dicts). One node mutating a shared list = cross-agent contamination.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: MUTABLE vs IMMUTABLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+IMMUTABLE = written in pen. Value can NEVER change. To get a different value,
+            Python throws the object away and makes a NEW one.
+            Types: int, float, str, tuple, bool, frozenset, bytes
+MUTABLE   = written in pencil. Editable in place, SAME identity (same address).
+            Types: list, dict, set
+
+Immutable trace:
+  x = 5; id(x)        # 0x500
+  x = x + 1; id(x)    # 0x520  DIFFERENT  -> made a new int 6, moved the label
+  # the 5 was never edited. you moved the name.
+
+Mutable trace:
+  nums = [1,2,3]; id(nums)   # 0x800
+  nums.append(4); id(nums)   # 0x800  SAME  -> edited in place
+
+SAME operator, OPPOSITE behavior, because of the camp:
+  a = [1,2]; b = a; a += [3]   # list += is IN-PLACE mutation -> b == [1,2,3]
+  x = "hi"; y = x; x += "!"    # str  += builds NEW string, rebinds x -> y=="hi"
+
+Mutation leaks out of functions. Rebinding stays local.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: THE MUTABLE DEFAULT ARGUMENT TRAP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE RULE: default argument values are evaluated ONCE, at function DEFINITION
+time — not on each call.
+
+  def add_skill(skill, skills=[]):     # ONE list created at def time
+      skills.append(skill)
+      return skills
+  add_skill("python")   # ['python']
+  add_skill("redis")    # ['python','redis']   <- same shared default object!
+  add_skill("docker")   # ['python','redis','docker']
+
+Every call with no list reuses the SAME default object (same id every call).
+It's the aliasing trap hidden in the signature.
+
+THE FIX (universal idiom):
+  def add_skill(skill, skills=None):   # None is immutable -> safe to share
+      if skills is None:               # "is None", not "== None"
+          skills = []                  # fresh list built PER CALL (body runs each call)
+      skills.append(skill)
+      return skills
+
+MISCONCEPTION TO KILL:
+  def f(store=dict()): ...   # NOT a fix. dict() also evaluated ONCE at def time.
+  def f(store=dict):  ...    # BROKEN. default is the class, not an instance.
+The spelling {} vs dict() is irrelevant; the problem is "created once at def time".
+
+LEGIT use of passing the FACTORY (list/dict uncalled) — only where the tool
+calls it fresh each time:
+  from dataclasses import dataclass, field
+  @dataclass
+  class Agent:
+      skills: list = field(default_factory=list)   # calls list() per instance
+  # also: collections.defaultdict(list)
+
+AXIS THAT MATTERS: is the object created ONCE, or is the factory called FRESH
+each time? dict (factory) != dict() (one instance made now).
+
+WHY IT MATTERS: helper like def run_agent(query, history=[]) -> user #2 inherits
+user #1's history. Cross-request data leak (adjacent to memory-poisoning niche).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4a: LIST INTERNALS — THE DYNAMIC ARRAY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A list = a row of numbered parking spots in ONE contiguous block of memory.
+Contiguous + equal width -> address of spot i = start_address + i * slot_size.
+One multiply-add. No walking. That single fact explains all list performance.
+
+CHEAP:
+  mylist[i]        O(1)            direct address arithmetic, size-independent
+  mylist.append(x) O(1) AMORTIZED  see below
+
+AMORTIZED O(1) (the interview detail):
+  A list reserves MORE spots than used. Appends drop into reserved spots = O(1).
+  When full: allocate a bigger block (~2x), COPY all elements over (O(n)),
+  then append. Most appends O(1), occasional resize O(n), averaged = O(1).
+  Senior answer: "Amortized O(1) — occasionally resizes and copies, O(n),
+  amortized away over many appends."
+
+EXPENSIVE:
+  mylist.insert(0,x) O(n)   every element shifts right one slot
+  mylist.pop(0)      O(n)   every element shifts left to close the gap
+  x in mylist        O(n)   linear scan; no address shortcut for VALUES
+
+FAILURE MODE — list as a queue:
+  queue = []
+  queue.append(t)   # O(1)
+  job = queue.pop(0)# O(n)  <- shifts whole list every pop -> O(n^2) over time
+FIX: collections.deque -> O(1) at BOTH ends (linked blocks, not one array).
+This is exactly why 03_job_queue.py used deque, not list.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4b: DICT INTERNALS — THE HASH TABLE  (NOT a tree!)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A dict is a HASH TABLE. (B-trees are for DATABASE indexes — don't confuse them.)
+
+ANALOGY: coat check with numbered hooks. Attendant runs your NAME through a
+fixed rule -> hook number. Never searches. Computes the location from the key.
+That rule = the HASH FUNCTION. That's the whole secret to O(1).
+
+STORE d["rudra"] = 9.06:
+  1. hash("rudra")  -> big int, e.g. 8374625109  (deterministic)
+  2. % num_slots    -> 8374625109 % 8 = 5         (map to a slot)
+  3. store (key, value) in slot 5
+LOOKUP d["rudra"]:
+  1. hash("rudra") -> same int   2. % 8 = 5   3. go straight to slot 5
+No scanning. Cost is size-independent -> O(1).
+
+COLLISIONS: two different keys hash to the same slot (unavoidable — infinite
+keys, finite slots). Python PROBES: try next slots (5->6->7...) until it finds
+the right key or an empty slot. Lookup does the same walk.
+  Average case: O(1)  (few collisions)
+  Worst case:  O(n)   (all keys collide -> probe chain becomes a linear scan)
+  Python keeps the table ~2/3 sparse (resizes) so worst case is rare.
+  INTERVIEW ANSWER: "O(1) average, O(n) worst case due to collisions."
+
+KEYS MUST BE HASHABLE (= effectively immutable):
+  d["name"]=1   ok (str)     d[(1,2)]=1  ok (tuple)
+  d[[1,2]]=1    TypeError: unhashable type: 'list'
+WHY: slot is computed from hash(key). A mutable key could change -> its hash
+changes -> it "belongs" in a new slot but physically sits in the old one ->
+unreachable -> corrupt table. So only immutable keys: str, int, tuple, frozenset.
+Same reason a set can hold (1,2) but not [1,2].
+
+WHERE YOU ALREADY USE HASH TABLES: Redis rate limiter (key->count), in_progress
+job dict (job_id->job, O(1) reaper checks), Cascade AI per-user memory (user_id->),
+set() dedup ("dedupe a million records" -> set, O(1) membership, O(n) total).
+
+================================================================================
+FILL IN THE BLANK — TEST YOURSELF
+================================================================================
+Q1. x=[1]; y=x; y.append(2); print(x) -> ?           A1. [1, 2] (same object)
+Q2. `is` checks ___, `==` checks ___.                A2. identity (same object) / value
+Q3. Which are immutable: list, str, dict, tuple, int A3. str, tuple, int
+Q4. Why is def f(a, items=[]) a bug?                 A4. default made once at def
+    time; shared across calls -> accumulates. Fix: items=None, build [] in body.
+Q5. list.append is O(__) ____; list.insert(0,x) O(__) A5. O(1) amortized; O(n)
+Q6. dict lookup: O(__) avg, O(__) worst, worst caused A6. O(1); O(n); collisions
+Q7. Why can a tuple be a dict key but not a list?    A7. key slot = hash(key);
+    mutable key's hash could change -> unreachable. Only immutable/hashable keys.
+================================================================================

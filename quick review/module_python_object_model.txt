@@ -1,0 +1,53 @@
+================================================================================
+PYTHON OBJECT & MEMORY MODEL — QUICK REFERENCE  (Phase 1, Wk 1)
+================================================================================
+
+NAMES ARE TAGS, NOT BOXES
+-------------------------
+x = 5  ->  label x points at object 5 in the heap. "=" binds, does NOT copy.
+b = a  ->  copies the POINTER, not the object. One object, two labels.
+id(obj) = identity (address). same id() = same object.
+is  -> same object?   ==  -> same value?   (only real use of is: `if x is None`)
+Functions get a COPY OF THE POINTER (pass by object reference).
+  -> mutating an argument changes the caller's object. Copy first if you must not.
+
+MUTABLE vs IMMUTABLE
+--------------------
+Immutable (pen): int, float, str, tuple, bool, frozenset -> new object on change
+Mutable (pencil): list, dict, set -> edited in place, same id
+a=[1]; b=a; a+=[2]  -> b sees it (in-place).  x="h"; y=x; x+="!" -> y unchanged (rebind)
+Mutation leaks out of functions. Rebinding stays local.
+
+MUTABLE DEFAULT ARG TRAP
+------------------------
+def f(x, items=[]): ...   # default made ONCE at def time -> shared -> accumulates
+FIX: def f(x, items=None):
+         if items is None: items = []   # fresh per call
+NOT a fix: items=dict()  (also once at def time).  Broken: items=dict (the class).
+Legit factory use: @dataclass field(default_factory=list); defaultdict(list).
+Axis: created ONCE vs called FRESH each time.
+
+LIST = DYNAMIC ARRAY (contiguous memory)
+----------------------------------------
+index mylist[i]      O(1)            start + i*slot_size
+append               O(1) AMORTIZED  occasional resize+copy = O(n), averaged out
+insert(0,x)/pop(0)   O(n)            shifts all elements
+x in mylist          O(n)            linear scan (no shortcut for values)
+Queue with pop(0) -> O(n^2). Use collections.deque (O(1) both ends).
+
+DICT = HASH TABLE (not a tree)
+------------------------------
+store/lookup: hash(key) % slots -> bucket -> jump straight there
+  O(1) average, O(n) worst (collisions -> probe chain becomes linear scan)
+  Python keeps table ~2/3 sparse to avoid worst case.
+Keys must be HASHABLE = immutable (str/int/tuple/frozenset).
+  list can't be a key: mutating it changes its hash -> unreachable -> corrupt.
+set = hash table w/o values -> O(1) membership, great for dedup.
+
+INTERVIEW ONE-LINERS
+--------------------
+"is append O(1)?"  -> amortized O(1); occasionally resizes+copies (O(n)).
+"is dict O(1)?"    -> O(1) average, O(n) worst due to collisions.
+"why no list keys?"-> key slot = hash(key); mutable hash changes -> unreachable.
+"dedupe fast?"     -> set; O(1) membership, O(n) total.
+================================================================================
