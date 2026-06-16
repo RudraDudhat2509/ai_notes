@@ -1,0 +1,230 @@
+================================================================================
+MODULE — FUNCTIONS LIKE A SENIOR  (Phase 1, Week 2)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-15
+================================================================================
+
+PREREQUISITE: functions are OBJECTS.
+  def greet(): return "hi"
+  x = greet          # grab the object, NOT a call (no parens)
+  x()                # "hi" — x points at same function
+  greet is x         # True — one function object, two name tags (Week 1)
+  greet   → the function object
+  greet() → the return value of calling it
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: CLOSURES — functions that remember
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A closure = an inner function that captures variables from its enclosing scope,
+carrying them in a "backpack" even after the outer function has returned.
+
+  def make_greeter(name):       # name lives in outer scope
+      def greeter():
+          return f"Hello, {name}"   # captures 'name' from enclosing scope
+      return greeter                # return function OBJECT, not greeter()
+
+  hi = make_greeter("Rudra")    # make_greeter exits. 'name' should be gone...
+  hi()                          # "Hello, Rudra"  <- name SURVIVED in the backpack
+
+PROOF — each call creates its own backpack:
+  hi_rudra  = make_greeter("Rudra")
+  hi_varsha = make_greeter("Varsha")
+  # two separate objects, two separate backpacks, don't interfere
+
+X-RAY:
+  hi_rudra.__closure__[0].cell_contents   # 'Rudra'
+
+THE CLASSIC TRAP — capture is by REFERENCE, not snapshot:
+  funcs = []
+  for i in range(3):
+      def f(): return i
+      funcs.append(f)
+  funcs[0]()  # 2  (NOT 0!)
+  funcs[1]()  # 2
+  funcs[2]()  # 2
+  WHY: all three backpacks hold a pointer to the SAME 'i'. Loop ends, i=2.
+  All three read i=2 at call time.
+
+FIX — freeze with a default arg (evaluated at DEFINITION time — Week 1!):
+  def f(x=i): return x   # x=i snapshots current i into the default
+  # now each f has its own x with the value of i at that iteration
+
+NONLOCAL — when a closure needs to MUTATE (not just read) a captured variable:
+  def counter():
+      count = 0
+      def increment():
+          nonlocal count    # "I mean the count in the enclosing scope"
+          count += 1        # without nonlocal: UnboundLocalError
+          return count
+      return increment
+
+PRODUCTION USE: factory functions (make pre-configured callables), stateful
+wrappers, per-agent counters for evals, tool-call interceptors for red-teaming.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: DECORATORS — closures with a costume on
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A decorator = a function that takes a function, wraps it in a closure, returns
+the wrapper. Adds behavior WITHOUT modifying the original function.
+
+LONG FORM (the magic in full view):
+  def call_counter(func):           # takes a function
+      count = 0                     # lives in closure backpack
+      def wrapper(*args, **kwargs): # wraps the original
+          nonlocal count
+          count += 1
+          print(f"Call #{count} to {func.__name__}")
+          return func(*args, **kwargs)  # call the original
+      return wrapper                # return the wrapper
+
+  def fetch_shopify(client_id): ...
+  fetch_shopify = call_counter(fetch_shopify)  # manually wrap
+
+@ SYNTAX — pure shorthand for the reassignment above:
+  @call_counter
+  def fetch_shopify(client_id): ...
+  # IDENTICAL to: fetch_shopify = call_counter(fetch_shopify)
+  # Runs at DEFINITION TIME (when Python reads the def)
+
+*args, **kwargs:
+  wrapper must accept whatever the original takes (unknown in advance).
+  *args  → tuple of positional args
+  **kwargs → dict of keyword args
+  Pass straight through: func(*args, **kwargs)
+
+RUNS AT DEFINITION TIME — this catches people:
+  @expensive_decorator    # this runs NOW when Python reads the def
+  def my_func(): ...
+  # my_func is now whatever expensive_decorator returned
+
+PRODUCTION USE: Langfuse/OTel instrument your LLM calls with decorators —
+wrap, record start time, capture input, call original, record end time + tokens.
+Red-teaming: swap real tool with decorated interceptor to log every tool input.
+FastAPI's @app.get() is a decorator that registers a route handler.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: GENERATORS — functions that pause
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PROBLEM: loading 10M log lines into RAM to find one line = OOM.
+SOLUTION: produce values one at a time, on demand.
+
+yield = pause + hand value to caller + resume from exact same point on next call.
+Any function with 'yield' → generator function. Calling it returns a GENERATOR
+OBJECT (paused machine). Code runs only when you call next().
+
+  def countdown(n):
+      print(f"starting from {n}")
+      while n > 0:
+          yield n       # PAUSE here, hand n to caller
+          n -= 1        # RESUME here on next next() call
+      print("done")
+
+  gen = countdown(3)    # ZERO code runs. just the paused object.
+  next(gen)             # runs until first yield → prints "starting from 3" → yields 3
+  next(gen)             # resumes → n=2 → yields 2
+  next(gen)             # resumes → n=1 → yields 1
+  next(gen)             # resumes → loop ends → prints "done" → StopIteration
+
+  for n in countdown(3): print(n)   # for loop calls next() + catches StopIteration
+
+MEMORY:
+  a = [x**2 for x in range(10_000_000)]   # list — 80MB in RAM immediately
+  b = (x**2 for x in range(10_000_000))   # generator — ~200 bytes, lazy
+
+GENERATOR EXPRESSION: (expr for x in iterable)  — like list comprehension but lazy
+Can only iterate ONCE. No indexing.
+
+PRODUCTION USE:
+  - Streaming agent traces for eval without OOM
+  - diffprompt: yield prompt outputs one at a time, score, move on
+  - garak probes: yield attack inputs on demand into the agent pipeline
+  - Processing large Shopify order exports line by line
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: CONTEXT MANAGERS — guaranteed cleanup
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PROBLEM: exception mid-block → file/connection/lock never released → resource leak
+         or worse, a lock acquired forever → DEADLOCK (all threads blocked waiting).
+SOLUTION: __exit__ is ALWAYS called when leaving a with block, no matter what.
+
+  with open("logs.txt") as f:   # __enter__ runs → opens file → f = the handle
+      data = f.read()           # exception here?
+  # __exit__ runs regardless → file closed. always.
+
+BUILDING ONE FROM SCRATCH:
+  class ManagedConnection:
+      def __enter__(self):
+          self.conn = connect(...)
+          return self.conn          # what 'as conn' receives
+
+      def __exit__(self, exc_type, exc_val, exc_tb):
+          self.conn.close()         # ALWAYS runs
+          return False              # False = let exceptions propagate (almost always right)
+                                    # True = suppress exceptions (rarely correct)
+
+  exc_type/val/tb are None if no exception occurred.
+
+@contextmanager SHORTCUT — write as a generator:
+  from contextlib import contextmanager
+
+  @contextmanager
+  def managed_lock(lock):
+      lock.acquire()        # __enter__: everything before yield
+      try:
+          yield             # hand control to the with block
+      finally:
+          lock.release()    # __exit__: always runs (finally guarantees it)
+
+  with managed_lock(self.lock):
+      # do work — lock.release() is GUARANTEED even on exception
+
+REAL EXAMPLE — why with self.lock: works in 03_job_queue.py:
+  Lock.__enter__ = acquire()
+  Lock.__exit__  = release()
+  Exception mid-block? __exit__ still fires. Lock released. No deadlock.
+
+WITHOUT context manager: crash mid-block → lock acquired forever → every other
+  thread waits forever for a lock that will never be released → deadlock.
+
+PRODUCTION USE: DB transactions (commit or rollback, always), Redis locks,
+file handles, network connections, agent job lifecycle tracking.
+
+================================================================================
+FILL IN THE BLANK — TEST YOURSELF
+================================================================================
+Q1. A closure carries a ________ from its enclosing scope, even after
+    the outer function has returned.
+A1. reference to a variable (in a "backpack" = __closure__)
+
+Q2. funcs = []; for i in range(3): def f(): return i; funcs.append(f)
+    funcs[0]() returns ___. Why?
+A2. 2. All three closures hold a POINTER to the same i. Loop ends, i=2. All read 2.
+
+Q3. @my_decorator runs at ________ time, not call time.
+A3. definition time
+
+Q4. Why does wrapper use *args, **kwargs?
+A4. The decorator doesn't know what arguments the original function takes.
+    *args/*kwargs accept anything and pass it through unchanged.
+
+Q5. A generator function contains the keyword _____. Calling it returns
+    a __________ object. Code runs only when you call _________.
+A5. yield; generator; next()
+
+Q6. List comprehension vs generator expression: which loads all values into
+    memory? Which computes one value at a time?
+A6. List comprehension = all in memory. Generator expression = one at a time.
+
+Q7. __exit__ receives three args. What are they, and what does returning
+    False vs True do?
+A7. exc_type, exc_val, exc_tb (or all None if no exception).
+    False = let exception propagate. True = suppress it.
+
+Q8. Why is "with self.lock:" the right pattern for a threading.Lock?
+A8. Lock.__exit__ calls release(), guaranteed even on exception. Without it,
+    a crash mid-block leaves the lock acquired forever = deadlock.
+================================================================================

@@ -1,0 +1,93 @@
+================================================================================
+FUNCTIONS LIKE A SENIOR — QUICK REFERENCE  (Phase 1, Wk 2)
+================================================================================
+
+FUNCTIONS ARE OBJECTS
+---------------------
+greet   → the object (no call)     greet() → the return value (calls it)
+x = greet  → two names, one object. x() works. greet is x → True.
+
+CLOSURES
+--------
+Inner function captures outer variable in a backpack (__closure__).
+Backpack survives after outer function returns.
+Capture is by REFERENCE, not snapshot.
+
+Loop trap:
+  for i in range(3):
+      funcs.append(lambda: i)    # all three capture pointer to SAME i
+  funcs[0]()  # 2, not 0        # i=2 when called, loop already done
+Fix: default arg freezes current value (def f(x=i): return x)
+
+nonlocal: needed to MUTATE (not just read) a captured variable.
+Without it: count += 1 inside a nested function → UnboundLocalError.
+
+DECORATORS
+----------
+= function that takes a function, wraps it in a closure, returns the wrapper.
+Runs at DEFINITION TIME.
+
+  def my_decorator(func):
+      def wrapper(*args, **kwargs):    # *args/**kwargs = pass-through any signature
+          # before
+          result = func(*args, **kwargs)
+          # after
+          return result
+      return wrapper
+
+  @my_decorator          # ← identical to: fetch = my_decorator(fetch)
+  def fetch(): ...
+
+Langfuse/OTel: decorators wrap LLM calls to record time/tokens/cost.
+Red-teaming: swap real tool with decorated interceptor to capture tool inputs.
+@app.get() in FastAPI is a decorator that registers a route.
+
+GENERATORS
+----------
+yield = pause + hand value + resume from same point on next next().
+Calling a generator function returns a PAUSED OBJECT. Zero code runs.
+next(gen) = run until next yield (or StopIteration).
+for loop = auto next() + catches StopIteration.
+
+  def gen(): yield 1; yield 2   # pauses twice
+  g = gen()          # paused, nothing ran
+  next(g)            # 1
+  next(g)            # 2
+  next(g)            # StopIteration
+
+List comprehension vs generator expression:
+  [x**2 for x in range(10M)]  → 80MB in RAM
+  (x**2 for x in range(10M))  → ~200 bytes, one at a time
+
+Use for: streaming traces, attack inputs (garak probes), large file processing.
+One-pass only. No indexing.
+
+CONTEXT MANAGERS
+----------------
+__enter__: runs on entering with block. return value → 'as' name.
+__exit__:  ALWAYS runs on exit (exception, return, break — anything).
+           args: exc_type, exc_val, exc_tb (None if no exception)
+           return False = propagate exception. True = suppress.
+
+@contextmanager shortcut:
+  @contextmanager
+  def managed(resource):
+      setup()         # __enter__
+      try:
+          yield value # what 'as' receives
+      finally:
+          teardown()  # __exit__ — finally guarantees this
+
+Lock without context manager: crash mid-block → lock held forever → deadlock.
+with self.lock: → Lock.__exit__ calls release() no matter what → safe.
+
+INTERVIEW ONE-LINERS
+--------------------
+"What's a closure?" → inner fn that carries a reference to outer scope variable,
+                       survives after outer fn returns.
+"Loop variable capture?" → all closures point to same variable; read its CURRENT
+                            value at call time, not at creation time.
+"What does @decorator do?" → syntax for fn = decorator(fn) at def time.
+"Generator vs list?" → generator lazy (one value, ~200B); list eager (all in RAM).
+"Why with self.lock?" → __exit__ guarantees release even on exception. No deadlock.
+================================================================================
