@@ -128,7 +128,7 @@ Scale AI (red teaming), Palantir (security isolation), and eval-focused teams ma
 | System Design | **Framework only (5/10)** | Framework known, NOT drilled. Needs cold timed reps. |
 | **Python object/memory model** | **Strong** | ✅ Wk1. References, is/==, mutable vs immutable, default-arg trap, list (dynamic array) + dict (hash table) internals. Nailed the gate Qs. |
 | **Functions deep** | **Strong** | ✅ Wk2. Closures, loop-capture trap, nonlocal, decorators, generators, context managers. All gate Qs correct. |
-| **Concurrency (GIL)** | **Not covered** | #1 gap. GIL, threading vs multiprocessing vs asyncio. |
+| **Concurrency (GIL)** | **Strong** | ✅ Wk3. GIL, threading vs multiprocessing vs asyncio, run_in_executor, bounded worker queue. Gate Qs correct (missed CPU-block detail first pass, got it on model answer). |
 | **Testing** | **Not covered** | pytest, mocking, TDD. Red flag if missing. |
 | **SQL (writing it)** | **Not covered** | JOINs, GROUP BY, window functions cold. |
 | **Networking/HTTP** | **Not covered** | TCP, HTTP/1.1 vs /2, WebSockets, gRPC, DNS. |
@@ -153,7 +153,8 @@ Essential DS work ───────────────────► f
 
 - ✅ **Week 1 — Object & memory model + data structure internals.** DONE. Names as references, `is` vs `==`, mutable vs immutable, default-arg trap, list (dynamic array, amortized append, O(n) front ops) + dict (hash table, O(1) avg / O(n) worst, hashable keys) internals. Notes: `module_python_object_model.txt`. Practice: `04_mutability_bugs.py` (assigned).
 - ✅ **Week 2 — Functions like a senior.** DONE. Functions as objects, closures (backpack/reference capture, loop trap, nonlocal), decorators (@syntax = fn=decorator(fn) at def time, *args/**kwargs), generators (yield, lazy eval, generator expressions), context managers (__enter__/__exit__, @contextmanager, guaranteed cleanup, deadlock prevention). Notes: `module_python_functions_deep.txt`. Practice: `05_agent_instrumentation.py` (assigned).
-- **Week 3 — Concurrency.** ← **CURRENT** Closures, decorators (write `@app.get` from scratch), generators & `yield` (lazy eval, memory), context managers (`__enter__`/`__exit__`).
+- ✅ **Week 3 — Concurrency.** DONE. GIL (what it is, why it exists, refcount GC), threading vs multiprocessing vs asyncio decision table, run_in_executor pattern for CPU work in async handlers, asyncio Queue + bounded worker pool. Notes: `module_concurrency.txt`.
+- **Week 4 — Testing + error handling + professional debugging.** ← **CURRENT** Closures, decorators (write `@app.get` from scratch), generators & `yield` (lazy eval, memory), context managers (`__enter__`/`__exit__`).
 - **Week 3 — Concurrency.** The GIL (what it locks, why threading ≠ parallelism for CPU work). threading vs multiprocessing vs asyncio decision tree. Retroactively makes async + job queue make sense.
 - **Week 4 — Testing + error handling + PROFESSIONAL DEBUGGING.** pytest, fixtures, parametrize, mocking external APIs (`unittest.mock`), TDD, exception design. PLUS the scientific debugging method: reproduce → isolate → form a hypothesis → test ONE thing → read the actual traceback bottom-up → bisect. Tools: `pdb`/`breakpoint()`, reading stack traces, `git bisect`, binary-search a bug, print-vs-debugger tradeoffs. The rule: never guess-and-poke; form a hypothesis and test it.
 - **Phase 1 gate:** Build a tested CLI tool (e.g. mini task scheduler) using a generator, a decorator, a context manager, proper exceptions. All tests pass. Explains every line.

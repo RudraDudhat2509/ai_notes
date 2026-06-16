@@ -1,0 +1,76 @@
+================================================================================
+CONCURRENCY: GIL, THREADING, MULTIPROCESSING — QUICK REFERENCE  (Phase 1, Wk 3)
+================================================================================
+
+THE GIL
+--------
+Global Interpreter Lock. ONE thread executes Python bytecode at a time.
+Exists because CPython's reference-counting GC is not thread-safe.
+Released during I/O waits. Held during CPU work.
+
+THREE TOOLS
+-----------
+asyncio         I/O-bound, many concurrent ops. One thread, no GIL contention.
+                Coroutines yield on I/O → event loop runs others. Low memory.
+                FAILURE: CPU work inside async def → blocks entire event loop.
+
+threading       I/O-bound with blocking libs. GIL released during I/O waits.
+                NEVER for CPU-bound → threads take turns on one core, no speedup.
+
+multiprocessing CPU-bound. Separate processes, each with own GIL. True parallelism.
+                Cost: heavy spawn, data must be picklable.
+                Use ProcessPoolExecutor, not raw Process.
+
+DECISION:
+  Many concurrent I/O ops    → asyncio + Queue + bounded workers
+  CPU-bound                  → ProcessPoolExecutor
+  Threading for CPU          → WRONG (GIL, no parallelism)
+  CPU work in async handler  → WRONG (blocks event loop, serializes all requests)
+
+COMBINING BOTH
+--------------
+  async def process_client(client_id):
+      data = await fetch_shopify(client_id)                        # I/O: asyncio
+      loop = asyncio.get_event_loop()
+      result = await loop.run_in_executor(executor, fraud_detect, data)  # CPU: process
+      return result
+
+run_in_executor(ProcessPoolExecutor(), fn, data):
+  → sends fn to separate process (own GIL, separate core)
+  → returns awaitable, event loop stays free
+  → true parallelism for CPU work
+
+ASYNCIO WORKER QUEUE (the right pattern for 100+ clients)
+----------------------------------------------------------
+  async def worker(queue):
+      while True:
+          item = await queue.get()
+          try: await process(item)
+          except: log_error(item)
+          finally: queue.task_done()
+
+  queue = asyncio.Queue()
+  [await queue.put(c) for c in clients]
+  workers = [asyncio.create_task(worker(queue)) for _ in range(10)]
+  await queue.join()
+
+Bounded pool (10 workers) beats gather(100): rate limit control, error isolation,
+backpressure, systematic — workers survive individual job failures.
+
+FAILURE MODES
+-------------
+CPU in async def        → event loop blocks → all requests serialized → fix: run_in_executor
+Threading for CPU       → GIL = no parallelism, worse than single-threaded
+Too many coroutines     → rate limits, memory spike → fix: bounded Queue
+Pickling error          → use top-level functions, picklable data
+
+INTERVIEW ONE-LINERS
+--------------------
+"Does threading parallelize Python?"  → For I/O yes (GIL released during waits).
+                                         For CPU no (GIL held, threads take turns).
+"How do you run CPU work in FastAPI?" → run_in_executor(ProcessPoolExecutor, fn, data).
+"Why asyncio over threading?"         → One thread, no GIL contention, ~200 bytes/coroutine
+                                         vs ~8MB/thread, thousands of concurrent I/O ops.
+"What's the GIL?"                     → Mutex in CPython ensuring one thread executes
+                                         bytecode at a time. Exists for safe refcount GC.
+================================================================================

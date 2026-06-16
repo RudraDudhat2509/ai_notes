@@ -1,0 +1,191 @@
+================================================================================
+MODULE — CONCURRENCY: GIL, THREADING, MULTIPROCESSING  (Phase 1, Week 3)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-15
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: THE GIL — GLOBAL INTERPRETER LOCK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+A mutex inside CPython. Rule: only ONE thread can execute Python bytecode at a
+time — across the entire process. Even with 8 threads and 8 CPU cores, threads
+take turns. One core does Python work at any moment.
+
+WHY IT EXISTS:
+CPython's garbage collector uses reference counting. Every object has ob_refcnt.
+When refcount hits zero, the object is freed. If two threads decremented the same
+object's refcount simultaneously → race condition → object freed while still in
+use → crash. The GIL prevents this by serializing all Python object access.
+Tradeoff: simpler, faster single-threaded + safe C extensions vs no true
+multi-core parallelism.
+
+THE CRITICAL DISTINCTION — GIL only blocks CPU-bound work:
+  I/O-bound: thread releases the GIL while waiting for OS (HTTP, DB, file).
+             Other threads can run. Threads still useful for concurrent I/O.
+  CPU-bound: thread holds GIL the entire time. Other threads frozen.
+             Threading is WORSE than single-threaded (adds switch overhead).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: THREE TOOLS AND WHEN TO USE EACH
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TOOL 1 — asyncio (the right default for agents)
+  What: one thread, one event loop, thousands of coroutines yielding on I/O.
+  When: I/O-bound work with many concurrent operations.
+  Why it wins: GIL barely relevant (one thread = no contention). Lower memory
+  than threads (~8MB stack per thread vs ~200 bytes per coroutine). More control.
+  Failure mode: run CPU work inside a coroutine → blocks the entire event loop.
+                ALL other coroutines freeze. Nothing is awaited; nothing yields.
+
+TOOL 2 — threading
+  What: multiple OS threads, one Python interpreter, one GIL.
+  When: I/O-bound work where async isn't available (legacy blocking libs).
+  Why it sometimes helps: GIL released during I/O waits → threads can overlap.
+  Failure mode: CPU-bound work → threads take turns on one core → no speedup,
+                actually slower than single-threaded due to switch overhead.
+
+TOOL 3 — multiprocessing (the answer to CPU-bound work)
+  What: multiple PROCESSES, each with its OWN Python interpreter and OWN GIL.
+  When: CPU-bound work (ML inference, compression, parsing, number crunching).
+  Why it works: GIL is per-process. 4 processes on 4 cores = true parallelism.
+                Each process runs simultaneously on a separate core.
+  Cost: process spawn is heavy. Data sharing requires pickling (serialization).
+        Use ProcessPoolExecutor for a pool, not raw Process.
+
+DECISION TABLE:
+  I/O-bound, many concurrent → asyncio
+  I/O-bound, blocking lib    → threading
+  CPU-bound                  → multiprocessing (ProcessPoolExecutor)
+  Never for CPU              → threading (GIL prevents parallelism)
+  Never block event loop     → CPU work must be offloaded to process pool
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: COMBINING ASYNCIO + MULTIPROCESSING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REAL PATTERN: agent does I/O (Shopify fetch) then CPU work (fraud detection).
+
+  from concurrent.futures import ProcessPoolExecutor
+  import asyncio
+
+  executor = ProcessPoolExecutor(max_workers=4)
+
+  async def process_client(client_id):
+      # Step 1: I/O-bound → await, event loop free while waiting
+      revenue = await fetch_shopify(client_id)
+
+      # Step 2: CPU-bound → offload to process pool
+      # run_in_executor sends work to a separate process, returns an awaitable
+      loop = asyncio.get_event_loop()
+      fraud_score = await loop.run_in_executor(executor, fraud_detect, revenue)
+
+      return fraud_score
+
+run_in_executor: bridges asyncio and blocking/CPU code.
+  - Sends work to ProcessPoolExecutor (separate process, own GIL)
+  - Returns an awaitable — event loop is free while process runs
+  - Result comes back when process finishes
+  - With 4 cores: 4 fraud_detect calls run simultaneously on separate cores
+
+FASTAPI PATTERN — 50 requests, 2s ML inference each:
+  BAD:
+    @app.post("/predict")
+    async def predict(image: bytes):
+        result = model.predict(image)   # CPU work, blocks event loop 2s
+        # requests 2-50 all frozen while this runs → 100s total, serialized
+
+  GOOD:
+    executor = ProcessPoolExecutor(max_workers=4)
+    @app.post("/predict")
+    async def predict(image: bytes):
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(executor, model.predict, image)
+        # event loop free while inference runs in separate process
+        # 4 inferences simultaneously on 4 cores
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: ASYNCIO WORKER QUEUE PATTERN (your answer, formalized)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+For I/O-bound work at scale (100 clients, Shopify fetches):
+  DON'T: spawn 100 coroutines at once (resource spike, rate limits hit hard)
+  DO:    asyncio.Queue + bounded worker pool (10 workers = 10 concurrent fetches)
+
+  async def worker(queue):
+      while True:
+          client_id = await queue.get()
+          try:
+              await fetch_shopify(client_id)
+          except Exception as e:
+              log_error(client_id, e)   # catch per-job, don't kill the worker
+          finally:
+              queue.task_done()
+
+  async def main():
+      queue = asyncio.Queue()
+      for c in clients: await queue.put(c)
+      workers = [asyncio.create_task(worker(queue)) for _ in range(10)]
+      await queue.join()      # wait until all jobs done
+      for w in workers: w.cancel()
+
+Why bounded pool beats raw gather(100 coroutines):
+  - Controls concurrency → stays under Shopify rate limits
+  - Systematic: exceptions isolated per job, worker stays alive
+  - Backpressure: queue fills naturally, workers drain at their own pace
+
+For CPU-bound steps inside workers: await loop.run_in_executor(executor, fn, data)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FAILURE MODES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CPU work in async def:
+  Problem: blocks event loop. All coroutines freeze. Serializes everything.
+  Fix: run_in_executor(ProcessPoolExecutor, ...)
+
+Threading for CPU-bound:
+  Problem: GIL means threads take turns. Same core. No speedup. Adds overhead.
+  Fix: ProcessPoolExecutor
+
+Too many coroutines at once:
+  Problem: rate limits hit, memory spike, hard to debug failures.
+  Fix: asyncio.Queue + bounded worker pool
+
+Pickling error with multiprocessing:
+  Problem: Process can't serialize the function/data (lambdas, non-picklable objects).
+  Fix: use top-level functions (not lambdas), pass picklable data types.
+
+================================================================================
+FILL IN THE BLANK — TEST YOURSELF
+================================================================================
+Q1. GIL stands for ______. Rule: ___ thread(s) can execute Python bytecode
+    at a time. Why does it exist?
+A1. Global Interpreter Lock. ONE. Reference counting GC is not thread-safe —
+    concurrent refcount updates would corrupt memory.
+
+Q2. Threading helps for ___-bound work because ___. It does NOT help for
+    ___-bound work because ___.
+A2. I/O; GIL is released during I/O waits, threads can overlap their waiting.
+    CPU; GIL is held the entire time, threads take turns on one core — no speedup.
+
+Q3. multiprocessing sidesteps the GIL because ___.
+A3. Each process is a separate Python interpreter with its own GIL. They run
+    on separate cores simultaneously.
+
+Q4. You have a FastAPI endpoint that runs an ML model (2s CPU work) on each
+    request. 50 requests arrive. What happens if you call model.predict() directly
+    in the async handler? What's the fix?
+A4. Event loop blocks for 2s per request. All 50 requests serialized → 100s total.
+    Fix: await loop.run_in_executor(ProcessPoolExecutor(max_workers=4), model.predict, image)
+
+Q5. asyncio.Queue + 10 workers vs asyncio.gather(100 coroutines). What does
+    the bounded pool give you that gather doesn't?
+A5. Rate limit control, systematic error isolation per job, backpressure,
+    workers stay alive after individual job failures.
+
+Q6. run_in_executor(ProcessPoolExecutor(), fn, data) does what?
+A6. Sends fn(data) to a separate process (own GIL, separate core). Returns an
+    awaitable. Event loop is free while the process runs. True CPU parallelism.
+================================================================================
