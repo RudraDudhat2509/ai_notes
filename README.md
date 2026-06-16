@@ -39,6 +39,11 @@ You don't learn RAG before you understand how Python holds objects in memory —
 2. Essential data-structure work is folded INTO foundations (not a separate LeetCode grind). Light problems tied to the current topic. Rationale: AI-native startups (Portkey/Langfuse/Arize) test systems reasoning over LeetCode; Palantir/Scale do code-screen, so keep a safety net without wasting time.
 3. Every phase ends with ONE integration build that forces the layer to connect to the layer below it.
 
+**Cross-cutting skill — professional debugging (woven into every session):** every time
+Rudra hits a bug, treat it as a debugging rep. NEVER guess-and-poke. Method: reproduce it
+reliably → read the actual traceback bottom-up → form ONE hypothesis → test that one thing →
+isolate by bisection. Make him state the hypothesis before changing code. Formal module in Wk4.
+
 ---
 
 ## NICHE POSITIONING & COURSE END-GOAL (updated 2026-06-15)
@@ -149,7 +154,7 @@ Essential DS work ───────────────────► f
 - ✅ **Week 1 — Object & memory model + data structure internals.** DONE. Names as references, `is` vs `==`, mutable vs immutable, default-arg trap, list (dynamic array, amortized append, O(n) front ops) + dict (hash table, O(1) avg / O(n) worst, hashable keys) internals. Notes: `module_python_object_model.txt`. Practice: `04_mutability_bugs.py` (assigned).
 - **Week 2 — Functions like a senior.** ← **CURRENT** Closures, decorators (write `@app.get` from scratch), generators & `yield` (lazy eval, memory), context managers (`__enter__`/`__exit__`).
 - **Week 3 — Concurrency.** The GIL (what it locks, why threading ≠ parallelism for CPU work). threading vs multiprocessing vs asyncio decision tree. Retroactively makes async + job queue make sense.
-- **Week 4 — Testing + error handling.** pytest, fixtures, parametrize, mocking external APIs (`unittest.mock`), TDD, exception design.
+- **Week 4 — Testing + error handling + PROFESSIONAL DEBUGGING.** pytest, fixtures, parametrize, mocking external APIs (`unittest.mock`), TDD, exception design. PLUS the scientific debugging method: reproduce → isolate → form a hypothesis → test ONE thing → read the actual traceback bottom-up → bisect. Tools: `pdb`/`breakpoint()`, reading stack traces, `git bisect`, binary-search a bug, print-vs-debugger tradeoffs. The rule: never guess-and-poke; form a hypothesis and test it.
 - **Phase 1 gate:** Build a tested CLI tool (e.g. mini task scheduler) using a generator, a decorator, a context manager, proper exceptions. All tests pass. Explains every line.
 
 ### ⏳ PHASE 2 — BACKEND SYSTEMS DEPTH (Weeks 5–8)
