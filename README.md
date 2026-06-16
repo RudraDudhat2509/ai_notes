@@ -41,11 +41,23 @@ You don't learn RAG before you understand how Python holds objects in memory —
 
 ---
 
-## NICHE POSITIONING
+## NICHE POSITIONING & COURSE END-GOAL (updated 2026-06-15)
 
-**Current target (winter 2026):** General AI engineering — FDE, agentic AI, production reliability.
-**Long-term:** LLM security (memory poisoning, MCP attacks, multi-agent chains) — learning it, not positioning with it yet.
-**Do NOT** frame teaching, outreach, or positioning around security-first identity right now.
+**THE END-GOAL OF THIS COURSE:** be able to **break agents professionally** — offensive
+agent security + evals (red teaming). This is the destination every phase builds toward.
+Concretely: agent attack surfaces (prompt injection, tool poisoning, memory poisoning,
+multi-agent attack chains), plus rigorous eval/measurement of agent failure
+(diffprompt-style behavioral testing, garak-style probes, RAGAS, LLM-as-judge).
+
+**Why foundations still come first:** you cannot break an agent system you don't deeply
+understand. The exploit is always in the foundation (a mutable shared state leak, an
+unsanitized tool result, a retrieval that pulls attacker-controlled text). Phases 1–2
+build the engineer; Phase 3 builds the agent expert; Phase 4 weaponizes it into
+red-teaming + evals. The security lens is now the spine, not a "later" topic.
+
+**Winter 2026 hiring:** general AI engineering roles are still the near-term job target
+(broadest funnel), but the differentiator in interviews = the agent-security depth.
+Scale AI (red teaming), Palantir (security isolation), and eval-focused teams map directly.
 
 ---
 
@@ -154,10 +166,13 @@ Essential DS work ───────────────────► f
 - Week 12 — Observability (Langfuse tracing, OTel spans, cost tracking, evals).
 - **Phase 3 gate:** Build a traced, evaluated RAG service.
 
-### ⏳ PHASE 4 — INTEGRATION + INTERVIEW REPS (Weeks 13–16)
-- **Capstone — Mini Altagic backend.** FastAPI endpoint: JWT → Redis rate-limit → enqueue job → return job_id. Async worker: pull → mock Shopify → Postgres → complete. Crash recovery via reaper. Fully tested, Dockerized, traced. Tests every module at once.
-- System design drilling — one cold, timed whiteboard per session (URL shortener, rate-limiter-as-a-service, notification system, RAG at scale).
-- Mock interviews — interrogate and defend.
+### ⏳ PHASE 4 — INTEGRATION + AGENT SECURITY/EVALS + INTERVIEW REPS (Weeks 13–16)
+This is where the course end-goal (breaking agents professionally) gets built.
+- **Capstone build — Mini Altagic backend.** FastAPI endpoint: JWT → Redis rate-limit → enqueue job → return job_id. Async worker: pull → mock Shopify → Postgres → complete. Crash recovery via reaper. Fully tested, Dockerized, traced. Tests every module at once.
+- **Agent attack surfaces (offensive).** Prompt injection (direct + indirect), tool poisoning, memory poisoning (revisit w/ depth — deferred from Phase 3), multi-agent attack chains, RAG retrieval poisoning. Build attacks against the capstone agent, then defend it.
+- **Eval / measurement track.** Behavioral regression (diffprompt-style), garak-style probes, RAGAS, LLM-as-judge cascades, golden datasets. How you *prove* an agent is broken or safe — not vibes.
+- **System design drilling** — one cold, timed whiteboard per session (URL shortener, rate-limiter-as-a-service, notification system, RAG at scale, "design a safe agent platform").
+- **Mock interviews** — interrogate and defend, with emphasis on agent-security questions.
 
 ---
 

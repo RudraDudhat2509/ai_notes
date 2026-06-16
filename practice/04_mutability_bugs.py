@@ -23,14 +23,16 @@ from dataclasses import dataclass, field
 # A helper that should ADD a message WITHOUT mutating the caller's history.
 # (Think: building a prompt variant while keeping the original conversation.)
 def with_system_note(history: list, note: str) -> list:
-    history.append({"role": "system", "content": note})
-    return history
+    
+    return history + [{"role": "system", "content": note}]
 
 
 # ── BUG 2 ───────────────────────────────────────────────────────────────────
 # Per-user memory loader. Every NEW user with no saved memory should start
 # with a FRESH empty memory list. Right now they share one.
-def get_user_memory(user_id: str, memory=[]) -> list:
+def get_user_memory(user_id: str, memory=None) -> list:
+    if memory is None:
+        memory=[]
     memory.append(f"session_started:{user_id}")
     return memory
 
@@ -41,7 +43,7 @@ def get_user_memory(user_id: str, memory=[]) -> list:
 @dataclass
 class Agent:
     name: str
-    tools = []          # <-- something is wrong here
+    tools: list = field(default_factory=list)         # <-- something is wrong here
 
     def add_tool(self, tool: str):
         self.tools.append(tool)
@@ -51,8 +53,10 @@ class Agent:
 # Dedup function — should return unique items, order doesn't matter.
 # It tries to use a set but crashes on some inputs. Make it robust.
 def dedup(items: list) -> set:
-    return set(items)
-
+    # a set is a hash table -> every element must be hashable (immutable).
+    # lists are mutable -> unhashable -> convert each to its immutable twin, a
+    # tuple, before adding. (1,2) and (1,2) hash equal, so they dedupe correctly.
+    return {tuple(x) if isinstance(x, list) else x for x in items}
 
 # ── TESTS ── do not modify below this line ──────────────────────────────────
 
