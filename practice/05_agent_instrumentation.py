@@ -28,13 +28,15 @@ from contextlib import contextmanager
 # Attach the count as a .call_count attribute on the wrapper so tests can read it.
 
 def counted(func):
-    """
-    Decorator. Wraps func. Tracks how many times it has been called.
-    Exposes the count via wrapper.call_count.
+    call_count = 0
+    def inner(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        inner.call_count = call_count   # expose it as an attribute on the wrapper
+        return func(*args, **kwargs)
+    inner.call_count = 0                # initialize to 0 before any call
+    return inner
 
-    YOU IMPLEMENT THIS.
-    """
-    pass
 
 
 # ── PART 2: GENERATOR ──────────────────────────────────────────────────────
@@ -49,7 +51,12 @@ def attack_prompt_stream(prompts: list):
 
     YOU IMPLEMENT THIS.
     """
-    pass
+    for i in prompts: 
+        if "safe" not in i.lower():   # checks if the WORD appears ANYWHERE in the string
+
+            yield i 
+    return 
+    
 
 
 # ── PART 3: CONTEXT MANAGER ────────────────────────────────────────────────
@@ -61,14 +68,13 @@ def attack_prompt_stream(prompts: list):
 
 @contextmanager
 def agent_run():
-    """
-    Context manager for one agent evaluation run.
-    Yields a state dict {"tool_calls": 0} for callers to update.
-    Guarantees cleanup print on exit, even on exception.
+    state = {"tool_calls": 0}   # fresh dict every call
+    print("=== run started ===")
+    try:
+        yield state
+    finally:
+        print("=== run finished ===")
 
-    YOU IMPLEMENT THIS.
-    """
-    pass
 
 
 # ── TESTS ── do not modify below this line ──────────────────────────────────
