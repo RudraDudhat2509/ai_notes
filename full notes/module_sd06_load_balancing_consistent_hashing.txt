@@ -1,0 +1,274 @@
+================================================================================
+MODULE — SD-06: LOAD BALANCING + CONSISTENT HASHING  (System Design Phase, Session 6)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: WHY LOAD BALANCERS EXIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Single server: one IP, one process, one CPU. Ceiling: ~5-10k req/sec for an API.
+Beyond that: one of three failure modes — CPU saturation, memory exhaustion, or
+network bandwidth limit. All end with 503 errors and unhappy users.
+
+Load balancer: a reverse proxy that sits in front of N servers, distributing
+incoming requests across them. From the client's perspective, there is one
+server (the LB's IP). Behind it, N servers share the work.
+
+WHAT LOAD BALANCERS PROVIDE:
+  1. Scalability: add more servers behind the LB to handle more traffic.
+  2. High Availability: if server 2 of 5 dies, LB stops sending it traffic.
+     Remaining 4 absorb its share. No downtime visible to users.
+  3. Zero-downtime deploys: remove server from rotation → deploy → re-add.
+     Users never see a maintenance window.
+  4. Health checking: LB probes each server (HTTP GET /health every 30s).
+     Unhealthy server removed from rotation automatically.
+
+THE TWO LAYERS:
+
+  L4 (Transport Layer — TCP/UDP):
+    LB sees source IP, destination port, TCP connection. No HTTP headers.
+    Routes based on IP + port only.
+    Pros: ultra-low latency, simple, works for any TCP protocol.
+    Cons: can't route based on URL path, hostname, or cookie.
+    Use for: raw TCP services, database proxies (PgBouncer, ProxySQL),
+             gaming servers, any non-HTTP protocol.
+
+  L7 (Application Layer — HTTP/HTTPS):
+    LB understands HTTP. Can inspect URL, headers, cookies, request body.
+    Routes based on: URL path (/api/* → API servers, /static/* → static servers),
+    hostname (api.example.com vs admin.example.com), cookie value, HTTP method.
+    Pros: intelligent routing, SSL termination, HTTP/2, compression, request logging.
+    Cons: slightly higher latency (must parse HTTP), more complex.
+    Use for: web applications, API gateways, microservices. Default choice.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: LOAD BALANCING ALGORITHMS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ROUND ROBIN:
+  Requests go to server 1, 2, 3, 1, 2, 3... in order.
+  Simple, stateless, no tracking needed.
+  Assumes all servers are identical and all requests take equal time.
+  Problem: if server 2 receives a heavy 10-second request, it gets the next
+           request at the same rate as servers with 10ms requests → overloaded.
+  Use for: stateless services with uniform request cost.
+
+WEIGHTED ROUND ROBIN:
+  Servers have weights: server 1 (weight 3): 3 requests per cycle.
+  server 2 (weight 1): 1 request per cycle.
+  Use when: servers have different hardware specs (16 cores vs 4 cores).
+  The higher-spec server handles proportionally more traffic.
+
+LEAST CONNECTIONS:
+  LB tracks the number of active open connections per server.
+  New request → route to the server with fewest active connections.
+  Best for: long-lived connections (WebSockets, database connections, streaming).
+  A server with a stuck slow request gets fewer new ones.
+  Cost: LB must maintain state (connection counts). More memory.
+
+LEAST RESPONSE TIME:
+  Route to server with lowest combination of: active connections + response time.
+  Best for: heterogeneous workloads where servers respond at different rates.
+  Cost: LB must measure response times. More complex.
+
+IP HASH (Client Affinity / Sticky Sessions):
+  hash(client_ip) % N → always routes client to the same server.
+  Guarantees session stickiness: user's session data is on server 2, so they
+  always hit server 2. Session stored in application server memory.
+
+  PROBLEM: server memory sessions break horizontal scaling.
+  If server 2 dies → all those users lose their sessions.
+  Modern fix: DON'T store sessions in server memory. Store in Redis.
+  With Redis sessions: any server can serve any user. No need for IP hash.
+  IP hash is a legacy pattern. Prefer stateless servers + Redis sessions.
+
+  Still useful for: specific services where the same worker must handle
+  related requests (e.g., stateful protocols that can't be Redis-ized).
+
+RANDOM:
+  Pick a random server. Simple. Converges to even distribution at scale (law of
+  large numbers). No state. For services where even simple round-robin is overkill.
+
+CHOICE OF TWO (Power of Two Choices):
+  Pick 2 random servers, route to the one with fewer connections.
+  Better than random (avoids the worst servers) without full least-connections overhead.
+  Used by Nginx in their open-source commercial load balancer.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: THE PROBLEM CONSISTENT HASHING SOLVES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SCENARIO: you're routing cache requests to N Redis shards.
+  Naive approach: shard = hash(key) % N.
+
+  3 shards: key "user:42" → hash = 12345 → 12345 % 3 = 0 → goes to shard 0.
+  Always consistent. Works perfectly.
+
+  Now add a 4th shard: hash(key) % 4.
+    key "user:42" → 12345 % 4 = 1 → now goes to shard 1.
+    key "user:99" → hash % 4 = different shard.
+
+  When N changes, almost ALL keys remap to different shards.
+  With 3→4 shards: ~75% of keys remap. That's a cache miss storm.
+  All your hot cache data is on shard 0,1,2 but the keys now map to 0,1,2,3.
+  75% of requests hit the DB (which was protected by the cache). DB collapses.
+
+CONSISTENT HASHING SOLUTION:
+  Goal: when a node is added or removed, only keys that MUST move actually move.
+  Minimum disruption = k/N keys moved, where k = total keys and N = new total nodes.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: HOW CONSISTENT HASHING WORKS — THE RING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE RING:
+  Map the hash space 0..2^32-1 onto a circle (ring). Imagine a clock face,
+  but with 4 billion positions.
+  Each node is placed at a position on the ring by hashing its identifier:
+    hash("node-A") → position 15
+    hash("node-B") → position 142
+    hash("node-C") → position 280
+
+ROUTING RULE:
+  A key is assigned to the FIRST NODE encountered when walking CLOCKWISE
+  around the ring from the key's hash position.
+    hash("user:42") → position 100 → walk clockwise → next node is node-B (142).
+    hash("user:99") → position 200 → walk clockwise → next node is node-C (280).
+    hash("user:7")  → position 290 → walk clockwise → next node is node-A (15, wrapping around).
+
+ADDING A NODE:
+  New node D at position 180.
+  Only keys between 142 (node-B) and 180 (node-D) need to move from B to D.
+  All other keys stay on their current nodes. Typically 1/N of all keys move.
+  No cache miss storm.
+
+REMOVING A NODE:
+  Node B (position 142) is removed.
+  Keys that were on B now go to C (next clockwise at 280).
+  Only B's keys move. All others unchanged.
+
+WHY THIS MATTERS FOR DISTRIBUTED CACHES AND DATABASES:
+  Cassandra: all nodes on a consistent hash ring. Each node owns a range of
+             the ring. Add a node → only neighboring range is redistributed.
+  Redis Cluster: 16,384 fixed hash slots on a ring. Slots are reassigned manually
+             or automatically when nodes join/leave.
+  Distributed caches (Memcached, custom): consistent hashing prevents cache stampede
+             on node changes.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: VIRTUAL NODES — SOLVING THE UNEVEN DISTRIBUTION PROBLEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE PROBLEM WITH BASIC CONSISTENT HASHING:
+  3 physical nodes placed randomly on the ring.
+  By chance: node-A gets 60% of the ring, node-B gets 30%, node-C gets 10%.
+  Traffic: 60% hits A (overloaded), 10% hits C (idle).
+  Removing A: all 60% of its keys dump onto adjacent node → B or C overwhelmed.
+
+VIRTUAL NODES (vnodes):
+  Each physical node gets V virtual positions on the ring instead of 1.
+  hash("node-A-1"), hash("node-A-2"), ..., hash("node-A-V") → V positions.
+  With V=150 virtual nodes per physical node and 3 nodes = 450 points on ring.
+  With many virtual points, the ring is uniformly covered → even distribution.
+
+  Cassandra default: 256 vnodes per physical node.
+
+BENEFITS OF VNODES:
+  1. Even data distribution: with enough virtual nodes, each physical node
+     statistically owns ≈ 1/N of the data.
+  2. Graceful scaling: when a new node joins, it takes a small chunk from
+     MANY existing nodes (each gives up a few virtual node ranges). No single
+     donor node is overwhelmed.
+  3. Heterogeneous hardware: assign more vnodes to more powerful machines.
+     A server with 2× CPU/RAM gets 2× the vnodes → serves 2× the traffic.
+
+HOW TO EXPLAIN THIS IN AN INTERVIEW:
+  "Consistent hashing puts nodes on a ring to minimize key remapping when nodes
+  change. But naive placement causes hot spots. Virtual nodes solve this by giving
+  each physical node multiple positions on the ring, ensuring even distribution
+  and graceful scale-out."
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: PUTTING IT TOGETHER — FULL DISTRIBUTION ARCHITECTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A typical request routing path in a large system:
+
+  Internet → DNS (resolves to LB IP) → L4 Load Balancer (AWS NLB / GCP External LB)
+  → L7 Load Balancer (Nginx / AWS ALB) → routes by URL path:
+    /api/* → API servers (round-robin or least-connections)
+    /static/* → CDN origin servers (or CDN intercepts before this)
+  → API server needs cache → consistent hashing to pick Redis shard:
+    hash(cache_key) → ring position → correct Redis node
+  → API server needs DB → primary (writes) or replica (reads)
+
+HEALTH CHECKING:
+  LB sends: GET /health HTTP/1.1 every 30 seconds to every upstream.
+  Server responds: 200 OK → healthy. 500 or timeout → unhealthy.
+  After 2-3 consecutive failures: server removed from rotation.
+  After 2-3 consecutive successes: server re-added.
+  This gives automatic recovery from transient failures.
+
+GLOBAL LOAD BALANCING (multi-region):
+  DNS GeoDNS: returns different IPs based on user's geographic location.
+  User in Mumbai → resolves to Mumbai load balancer.
+  User in NYC → resolves to NYC load balancer.
+  Each region has its own full stack. Latency reduced to within-region.
+  Cross-region failover: if Mumbai LB health check fails → GeoDNS switches
+  Mumbai users to Singapore or London.
+
+ANYCAST:
+  Multiple servers share the SAME IP. Routing protocol (BGP) routes each user
+  to the nearest server automatically. Cloudflare uses anycast.
+  Different from GeoDNS (DNS-level routing) — anycast is network-level.
+  Benefits: transparent failover, no DNS TTL delays, always routes to nearest PoP.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: You have 5 cache shards. naive hash(key) % 5. You add a 6th shard.
+    Roughly what percentage of keys are remapped?
+A: ~83%. With % N routing, adding one node changes the modulo for almost all keys.
+   (Only keys where hash % 5 == hash % 6 stay put — about 1 in 6 = ~17%.)
+   83% cache miss storm → DB overwhelmed. This is exactly why consistent hashing exists.
+
+Q2: With consistent hashing and 3 nodes, you add a 4th. How many keys move?
+A: Approximately 1/4 of all keys (= k/N where N=4).
+   The new node takes over a range that was previously owned by its clockwise neighbor.
+   Only keys in that range move. All others are unaffected.
+
+Q3: Why does basic consistent hashing need virtual nodes?
+A: With 1 position per physical node, random placement causes uneven ring coverage.
+   One node might own 60% of the ring (overloaded) while another owns 10% (idle).
+   Virtual nodes give each physical node V positions, statistically ensuring
+   each node owns ≈ 1/N of the ring, giving uniform load distribution.
+
+Q4: You have 10 app servers handling WebSocket connections (long-lived, stateful).
+    Which LB algorithm is best?
+A: Least Connections. WebSocket connections persist for minutes/hours.
+   Round-robin would pile up connections on slower servers.
+   Least Connections tracks active connections per server → new connections
+   always go to the server with most capacity. Even distribution over time.
+
+Q5: Why should you prefer Redis sessions over IP-hash sticky sessions?
+A: IP hash ties a user to one server. If that server dies: user loses session.
+   Can't auto-scale (new server doesn't receive any old users).
+   Deploy requires careful rollout to avoid session loss.
+   Redis sessions: every server can serve every user (stateless app tier).
+   Session stored in Redis (external, shared, survives server restarts).
+   Server dies → user routed to any other server → Redis has their session.
+   Scales trivially: add servers, they all read from the same Redis.
+
+
+================================================================================
+END OF MODULE SD-06 — LOAD BALANCING + CONSISTENT HASHING
+================================================================================

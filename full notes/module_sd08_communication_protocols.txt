@@ -1,0 +1,458 @@
+================================================================================
+MODULE — SD-08: COMMUNICATION PROTOCOLS  (System Design Phase, Session 8)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: THE COMMUNICATION LANDSCAPE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Every service-to-service interaction is a contract. The wrong protocol is not just
+slower — it's architecturally wrong. Use this module to instantly map a requirement
+to the right protocol.
+
+  ┌────────────────────────────────────────────────┬──────────────────────┐
+  │ Requirement                                    │ Protocol             │
+  ├────────────────────────────────────────────────┼──────────────────────┤
+  │ Public API, CRUD, external clients             │ REST (HTTP/JSON)     │
+  │ Internal microservices, high throughput        │ gRPC (protobuf)      │
+  │ Real-time bidirectional (chat, gaming, collab) │ WebSockets           │
+  │ External → your server push (payment, CI/CD)   │ Webhooks             │
+  │ Server → browser push (notifications, feeds)   │ SSE                  │
+  │ Flexible client-driven queries (BFF, mobile)   │ GraphQL              │
+  └────────────────────────────────────────────────┴──────────────────────┘
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: REST — THE DEFAULT PUBLIC API PROTOCOL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  Representational State Transfer. An architectural style (not a protocol) for
+  designing networked APIs using HTTP as the transport.
+  Resources are nouns. HTTP verbs are the actions. Status codes communicate outcome.
+
+THE SIX CONSTRAINTS OF REST:
+  1. Client-Server: UI and data storage are separated. Client doesn't know DB schema.
+  2. Stateless: every request contains ALL information needed. Server stores no
+     client session state between requests. (Session token in Authorization header.)
+  3. Cacheable: responses declare if they can be cached (Cache-Control header).
+  4. Uniform Interface: resources are identified by URLs. Representations (JSON/XML).
+  5. Layered System: client doesn't know if it's talking to origin, LB, or CDN.
+  6. Code on Demand (optional): server can send executable code to client.
+
+HTTP VERBS AND THEIR SEMANTICS:
+  GET     → retrieve a resource. SAFE + IDEMPOTENT. Never changes server state.
+  POST    → create a new resource. NOT idempotent. Two POSTs = two resources.
+  PUT     → replace entire resource at a URL. IDEMPOTENT. PUT twice = same result.
+  PATCH   → partial update. NOT necessarily idempotent (depends on implementation).
+  DELETE  → remove resource. IDEMPOTENT. Delete twice = resource gone (same state).
+
+  IDEMPOTENT means: calling it multiple times has the same effect as calling once.
+  This matters for retries: safe to retry GET, PUT, DELETE on failure.
+  Not safe to retry POST blindly (use idempotency keys for payment POSTs).
+
+HTTP STATUS CODES — KNOW THESE COLD:
+  200 OK               → success, body has data.
+  201 Created          → resource created (response to POST).
+  204 No Content       → success, no body (response to DELETE or PUT).
+  301 Moved Permanently→ permanent redirect. Update your bookmarks.
+  302 Found            → temporary redirect.
+  304 Not Modified     → conditional GET: resource unchanged, use cached version.
+  400 Bad Request      → client sent invalid data (malformed JSON, missing field).
+  401 Unauthorized     → not authenticated. Send credentials.
+  403 Forbidden        → authenticated but not authorized. You don't have permission.
+  404 Not Found        → resource doesn't exist.
+  409 Conflict         → conflict with current state (duplicate key, stale update).
+  422 Unprocessable    → valid JSON but semantically wrong (invalid email format).
+  429 Too Many Requests→ rate limited. Retry-After header tells when to try again.
+  500 Internal Error   → server bug. Not client's fault.
+  502 Bad Gateway      → LB/proxy got bad response from upstream.
+  503 Service Unavailable→ server overloaded or down for maintenance.
+  504 Gateway Timeout  → LB/proxy: upstream didn't respond in time.
+
+URL DESIGN — REST CONVENTIONS:
+  Plural nouns for collections: /users, /orders, /products.
+  Nested resources: /users/42/orders (orders belonging to user 42).
+  Verbs in URLs are wrong in REST: ❌ /createUser → ✓ POST /users.
+  Filter, sort, paginate via query params: /orders?status=pending&sort=created_at&limit=20.
+  Resource IDs in path: /orders/99 (not /orders?id=99).
+
+STATELESSNESS AND HORIZONTAL SCALING:
+  Because server holds no session state, any server can handle any request.
+  Scale horizontally: add more servers, any can serve any client.
+  All state that must persist is in the client (token) or external store (Redis/DB).
+  This is the key architectural benefit of REST's statelessness constraint.
+
+REST LIMITATIONS:
+  Over-fetching: GET /users/42 returns all fields even if you only need "name".
+  Under-fetching: to display a tweet with author info, you need:
+    GET /tweets/99 then GET /users/{tweet.user_id}. Two round trips.
+  These problems at scale → GraphQL or BFF pattern.
+
+VERSIONING STRATEGIES:
+  URL versioning:  /api/v1/users, /api/v2/users. Explicit, cacheable, easy.
+  Header versioning: Accept: application/vnd.example.v2+json. Clean URLs, complex clients.
+  Query param: /users?version=2. Rarely used.
+  URL versioning is the most common and pragmatic. Simple to implement, easy to route.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: gRPC — HIGH-PERFORMANCE INTERNAL COMMUNICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  Google's Remote Procedure Call framework. Built on HTTP/2 + Protocol Buffers (protobuf).
+  Makes calling a remote service feel like calling a local function.
+  You define your service and message types in a .proto file. gRPC generates
+  client + server code in any language.
+
+PROTOCOL BUFFERS (protobuf):
+  A language-neutral, binary serialization format.
+  You define a schema:
+    message User {
+      int64 id = 1;
+      string name = 2;
+      string email = 3;
+    }
+  Compiled to strongly-typed classes in your language.
+  Binary encoded: not human-readable, but 3-10× smaller than JSON.
+  3-5× faster to serialize/deserialize than JSON (no string parsing).
+
+  WHY BINARY IS BETTER FOR INTERNAL SERVICES:
+    JSON: {"id": 42, "name": "Rudra", "email": "rudra@..."} = ~40 bytes as string.
+    Protobuf: same data = ~15 bytes binary. Less bandwidth. Faster.
+    Also: schema enforced at compile time. Wrong field type = compile error, not runtime error.
+
+HTTP/2 FEATURES gRPC EXPLOITS:
+  Multiplexing: multiple requests/responses over ONE TCP connection simultaneously.
+    HTTP/1.1: one request at a time per connection. Need 6 connections for parallelism.
+    HTTP/2: 100 streams on one connection. No head-of-line blocking (mostly).
+  Header compression (HPACK): repeated headers (Content-Type, Authorization) compressed.
+    HTTP/1.1: headers sent as text on every request. Hundreds of bytes wasted.
+  Binary framing: HTTP/2 frames are binary (vs HTTP/1.1's text).
+
+GRPC STREAMING MODES — THE BIG DIFFERENTIATOR:
+  Unary RPC: one request → one response. Like REST. Most common.
+    rpc GetUser (UserRequest) returns (UserResponse);
+
+  Server streaming: one request → stream of responses.
+    rpc ListOrders (OrdersRequest) returns (stream Order);
+    Use for: subscribe to a live feed, streaming search results, progress updates.
+
+  Client streaming: stream of requests → one response.
+    rpc UploadFile (stream FileChunk) returns (UploadResponse);
+    Use for: chunked file upload, sending sensor data in bulk.
+
+  Bidirectional streaming: both sides stream simultaneously.
+    rpc Chat (stream Message) returns (stream Message);
+    Use for: real-time chat between services, collaborative editing, trading terminals.
+    Two independent streams on the same HTTP/2 connection. Both sides send/receive freely.
+
+gRPC vs REST — WHEN TO USE WHICH:
+  gRPC pros:
+    3-5× lower latency (binary + HTTP/2 multiplexing).
+    Strongly typed contracts. Schema enforced at compile time.
+    Streaming built in. REST needs WebSockets for bidirectional.
+    Auto-generated client/server code from .proto. No manual API client writing.
+
+  gRPC cons:
+    Not human-readable. Debugging requires tooling (grpcurl, Postman gRPC).
+    Browser support limited (gRPC-web is a workaround, not native).
+    Not friendly for external developers without generated SDKs.
+
+  USE gRPC: internal microservice-to-microservice communication.
+  USE REST: public APIs, browser clients, external developers, webhooks.
+
+  Many companies: REST externally (public API) + gRPC internally (microservices).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: WEBSOCKETS — FULL-DUPLEX REAL-TIME
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  A persistent, full-duplex (both sides send simultaneously) communication channel
+  over a single long-lived TCP connection.
+  After an initial HTTP upgrade handshake, the connection switches protocol from HTTP
+  to WebSocket. Both client and server can send messages at any time without polling.
+
+THE HANDSHAKE:
+  Client sends:   GET /chat HTTP/1.1
+                  Upgrade: websocket
+                  Connection: Upgrade
+                  Sec-WebSocket-Key: random_base64_value
+
+  Server responds: HTTP/1.1 101 Switching Protocols
+                   Upgrade: websocket
+                   Connection: Upgrade
+  From this point: the connection is a WebSocket. Both sides communicate freely.
+
+WHY WebSockets INSTEAD OF POLLING:
+  Polling (naive): client hits GET /messages every 2 seconds.
+    100k users × 1 request/2s = 50k requests/sec to your server. Constant overhead.
+    Minimum 2-second delay for new messages. Wasteful if nothing new.
+
+  Long polling: client holds request open. Server responds when data available.
+    Better than polling. But each response closes the connection → new request needed.
+    Half-duplex (one direction at a time). Complex state management.
+
+  WebSocket: connection stays open. Server pushes message the instant it's available.
+    0ms delivery delay. One connection per user (not one per message).
+    Both send simultaneously.
+
+INFRASTRUCTURE CHALLENGES WITH WEBSOCKETS:
+  Persistent connections mean stateful servers:
+    Connection from user 42 is held by server 3. To push a message to user 42,
+    you must reach server 3 specifically. Load balancer round-robin breaks this.
+    Fix: use sticky sessions (IP hash or cookie-based LB routing) OR
+         a message bus (Redis Pub/Sub, Kafka) that all servers subscribe to.
+         Server receives message for user 42 → checks if user 42 is connected
+         to this server → if yes, pushes down the WebSocket.
+
+  Connection limits: each WebSocket holds an OS file descriptor.
+    Linux default: 65,536 file descriptors per process.
+    100k concurrent WebSocket users → multiple server processes needed.
+    Nginx: event-driven, handles 100k+ concurrent WebSocket connections.
+    Each WebSocket consumes ~10KB RAM for buffers.
+
+  Reconnection: network blips kill WebSockets. Clients must implement reconnect logic
+    with exponential backoff. Server must handle reconnecting clients gracefully.
+
+USE CASES:
+  Chat applications (WhatsApp web, Slack, Discord).
+  Collaborative editing (Google Docs, Figma).
+  Live sports/finance dashboards (stock tickers, cricket scoreboards).
+  Online multiplayer games (real-time position updates).
+  Real-time notifications with server→client push.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: WEBHOOKS — EVENT-DRIVEN PUSH FROM EXTERNAL SERVICES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  Webhooks are HTTP callbacks. External service → your server (push model).
+  You register a URL with the external service ("call my_server.com/webhook/stripe
+  whenever a payment succeeds"). The external service POSTs event data to your URL.
+
+CONTRAST WITH POLLING:
+  Polling: you ask Stripe every minute "any new events?" 99% of responses are empty.
+  Webhook: Stripe calls YOU the instant an event happens. Zero unnecessary requests.
+
+WEBHOOK DELIVERY SEMANTICS:
+  Stripe, GitHub, Twilio all retry failed webhook deliveries.
+  Typically: immediate + retry at 1min + 5min + 30min + 2hr + 24hr.
+  Your endpoint may receive the same event multiple times (at-least-once delivery).
+  YOUR HANDLER MUST BE IDEMPOTENT.
+  Use event ID to deduplicate: IF event_id already in processed_events → skip.
+  THEN mark event_id as processed → handle event.
+
+SECURITY — WEBHOOK SIGNATURE VERIFICATION:
+  Anyone can POST to your /webhook endpoint. How do you know it's really Stripe?
+  Stripe includes a signature in Stripe-Signature header:
+    HMAC-SHA256(secret_key, timestamp + "." + payload_body)
+  Your server: recompute the HMAC with your secret → compare → reject if mismatch.
+  Also: check timestamp to prevent replay attacks (reject webhooks > 5 minutes old).
+  NEVER skip signature verification. Without it: anyone can trigger your webhook logic.
+
+WEBHOOK PROCESSING BEST PRACTICE:
+  Respond with 200 OK IMMEDIATELY (within 5-30 seconds, or Stripe considers it failed).
+  Do heavy processing ASYNCHRONOUSLY:
+    1. Receive webhook.
+    2. Write to DB / Kafka.
+    3. Return 200 OK.
+    4. Background worker processes the event.
+  If processing fails: LET the sender retry (return 4xx or 5xx deliberately).
+  Don't process synchronously inside the webhook handler — you may time out.
+
+USE CASES:
+  Payment confirmations (Stripe, Razorpay → your server).
+  CI/CD triggers (GitHub push → Jenkins/CircleCI webhook).
+  Shipment updates (logistics partner → your tracking service).
+  Inbound SMS/WhatsApp (Twilio → your server).
+  IoT device alerts (device → cloud endpoint).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: SERVER-SENT EVENTS (SSE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  One-directional streaming from server to browser over plain HTTP.
+  Client opens one long-lived HTTP GET connection. Server pushes newline-delimited
+  text events (text/event-stream) whenever data is available.
+  Client can only receive, not send (use regular POST for sends).
+
+COMPARED TO WebSockets:
+  SSE: one direction (server→client). HTTP. Simpler. Auto-reconnect built in.
+  WebSocket: bidirectional. Separate protocol. More powerful, more complex.
+
+  SSE IS SIMPLER WHEN YOU ONLY NEED SERVER→CLIENT:
+    HTTP/2 compatible natively (no upgrade needed).
+    Works through corporate firewalls that block WebSocket upgrades.
+    Browser built-in reconnect with Last-Event-ID header (resume from last event).
+    EventSource API in browser is trivial:
+      const es = new EventSource('/stream');
+      es.onmessage = (e) => console.log(e.data);
+
+USE CASES:
+  Live notification feeds (new email arrived, new comment on your post).
+  Real-time dashboards (monitoring metrics updated every second).
+  LLM response streaming: ChatGPT-style token-by-token output uses SSE.
+  Progress bars for long-running server operations (export, report generation).
+
+WHEN TO USE SSE vs WebSockets:
+  Server → client only + want simplicity → SSE.
+  Bidirectional real-time (chat, collaborative editing, gaming) → WebSockets.
+  Many modern "real-time" features are actually one-directional → SSE is sufficient.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: API GATEWAY — THE FRONT DOOR FOR MICROSERVICES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  A single entry point that sits in front of all your microservices.
+  Clients call the gateway; the gateway routes to the correct downstream service.
+  Centralizes cross-cutting concerns: auth, rate limiting, logging, SSL.
+
+WITHOUT API GATEWAY:
+  Every microservice implements its own: auth check, rate limiting, request logging,
+  SSL termination, CORS, compression. 20 services × 7 cross-cutting concerns =
+  140 implementations to maintain, test, and keep in sync. Nightmare.
+
+WHAT AN API GATEWAY DOES:
+  Routing:          /api/users/* → User Service. /api/orders/* → Order Service.
+  Authentication:   validate JWT on every request before forwarding. Services get
+                    a pre-authenticated request (trust the gateway).
+  Rate limiting:    100 requests/minute per API key. Centralized. Redis-backed.
+  Request/Response transform: translate REST → gRPC for internal services.
+                    Aggregate N downstream responses into one client response (BFF).
+  SSL termination:  decrypt HTTPS at the gateway. Services run HTTP internally.
+  Caching:          cache GET responses at the gateway layer.
+  Observability:    log every request with latency, status. Trace propagation (OpenTelemetry).
+  Circuit breaking: stop routing to a down service. Return 503 proactively.
+
+GATEWAY AGGREGATION (BFF Pattern):
+  Mobile client needs user profile + recent orders + notification count.
+  Without gateway: 3 API calls. 3 × 100ms RTT = 300ms minimum.
+  With gateway: gateway fans out to 3 services in parallel, aggregates, returns one response.
+  Client makes 1 call. Gateway handles the fan-out. Total = max(3 RTTs) ≈ 100ms.
+
+  BFF = Backend For Frontend. A gateway tailored to one client type (mobile BFF, web BFF).
+  Mobile BFF returns minimal data (battery + bandwidth constrained).
+  Web BFF returns richer data. Same downstream services, different aggregation logic.
+
+POPULAR API GATEWAYS:
+  Kong: open-source, plugin ecosystem, runs on top of Nginx.
+  AWS API Gateway: managed, serverless, integrates with Lambda.
+  Nginx / Caddy: simpler, used as reverse proxy + gateway at smaller scale.
+  Envoy: high-performance, used in service meshes (Istio). L7 proxy.
+  Traefik: Kubernetes-native, auto-discovers services via labels.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 8: GraphQL — CLIENT-DRIVEN QUERIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  A query language for APIs. Client specifies exactly what data it needs.
+  Server returns exactly that. No more, no less.
+  One endpoint (/graphql) for all operations. Query shape is defined by the client.
+
+  REST problem: GET /users/42 returns {id, name, email, address, preferences, ...}
+    Client only needed name. Over-fetched.
+  REST problem 2: display tweet + author name → GET /tweets/99, GET /users/42.
+    Two round trips. Under-fetched.
+
+  GraphQL query:
+    query {
+      user(id: 42) {
+        name
+        recentTweets(limit: 5) {
+          content
+          createdAt
+        }
+      }
+    }
+  Returns exactly name + 5 recent tweets. One request. Perfectly fitted.
+
+TRADEOFFS:
+  PROS:
+    No over-fetching or under-fetching.
+    Reduces round trips (nested queries in one call).
+    Self-documenting (GraphQL schema is the contract).
+    Great for mobile clients (limited bandwidth, need specific fields).
+
+  CONS:
+    Complex caching: REST has cacheable URL → CDN/browser caches GET.
+      GraphQL: all queries are POST to /graphql. URL doesn't encode query.
+      Caching requires query-level hashing or persisted queries.
+    N+1 problem: resolve 10 users → each triggers a DB call for their posts.
+      10 users × 1 DB call each = 11 DB calls. Fix: DataLoader (batch + cache).
+    Authorization complexity: must check access per field, not per endpoint.
+    Learning curve for backend teams unfamiliar with resolver patterns.
+
+WHEN TO USE GraphQL:
+  ✓ Many client types with very different data needs (mobile vs web vs IoT).
+  ✓ Rapid product iteration where fields needed change frequently.
+  ✓ Public API with diverse external developers querying different subsets.
+
+  ✗ Simple CRUD API with uniform clients.
+  ✗ High-throughput internal services (gRPC is faster).
+  ✗ Team doesn't have GraphQL expertise (complexity cost).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: Design real-time collaborative document editing (Google Docs style).
+    Which communication protocol?
+A: WebSockets. Both client→server (user typing) and server→client (broadcast
+   other users' changes) must be real-time and bidirectional.
+   SSE would only handle server→client. REST polling would add unacceptable latency.
+   WebSocket: persistent connection per user, server broadcasts each keystroke
+   to all co-editors in the same document room.
+
+Q2: A payment webhook arrives at your server. Stripe retries on failure.
+    You process it and charge the user. The response is lost (network issue).
+    Stripe retries → you charge again. How do you prevent double charge?
+A: Idempotency check. Store event.id from the webhook payload.
+   Before processing: check IF event_id in processed_events table → skip, return 200.
+   After successful processing: INSERT event_id INTO processed_events.
+   Combine into one DB transaction with the charge. Retry = no-op. Safe.
+
+Q3: Internal microservice A calls microservice B 50,000 times/second.
+    Both are Python services. REST or gRPC?
+A: gRPC. At 50k calls/sec, protobuf's 3-5× smaller payload and faster
+   serialization saves significant CPU and bandwidth. HTTP/2 multiplexing
+   eliminates connection overhead. Auto-generated strongly-typed clients
+   prevent runtime type errors. REST JSON parsing overhead at 50k calls/sec
+   adds up to meaningful CPU cost.
+
+Q4: What is the difference between 401 and 403?
+A: 401 Unauthorized: not authenticated. The server doesn't know who you are.
+   Fix: provide credentials (login, send Bearer token).
+   403 Forbidden: authenticated but not authorized. The server knows who you are
+   but you don't have permission for this resource.
+   Fix: requires different permissions or a different account.
+   Confusingly, 401 is called "Unauthorized" but actually means "unauthenticated."
+
+Q5: Why can't a CDN cache WebSocket connections or GraphQL queries easily?
+A: CDN caches are keyed by URL. WebSocket is a persistent connection after an
+   HTTP upgrade — it's stateful and bidirectional. CDN nodes don't maintain
+   persistent connections on behalf of clients. Each WebSocket must reach an
+   origin server with connection state. CDN can cache the initial HTTP upgrade
+   response but not the ongoing message stream.
+   GraphQL: all queries go to POST /graphql. CDNs don't cache POST by default.
+   The same URL with different request bodies returns different data.
+   Fix for GraphQL: use persisted queries (hash the query → GET /graphql?hash=X)
+   to enable URL-based CDN caching.
+
+
+================================================================================
+END OF MODULE SD-08 — COMMUNICATION PROTOCOLS
+================================================================================

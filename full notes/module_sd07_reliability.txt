@@ -1,0 +1,415 @@
+================================================================================
+MODULE — SD-07: RELIABILITY  (System Design Phase, Session 7)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: THE RELIABILITY VOCABULARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BEFORE ANYTHING ELSE — define the terms precisely. Interviewers test vocabulary.
+
+  Availability:     percentage of time a system is operational and serving requests.
+                    99.9% ("three nines") = 8.77 hours downtime/year.
+                    99.99% ("four nines") = 52.6 minutes/year.
+                    99.999% ("five nines") = 5.26 minutes/year.
+
+  Reliability:      probability the system produces correct output for a given request.
+                    A system can be available but unreliable (up but returning wrong data).
+                    Reliability includes data correctness, not just uptime.
+
+  Durability:       data will survive hardware failures. No committed data is lost.
+                    98% durability = 2% of objects might be lost over a year. Unacceptable.
+                    S3 offers 99.999999999% (eleven nines) durability.
+                    Achieved via replication across multiple AZs + checksums.
+
+  Fault Tolerance:  the system continues operating correctly when one or more
+                    components fail. Achieved by eliminating single points of failure.
+
+  RTO (Recovery Time Objective):  how fast you recover from a failure.
+                    "We must be back online within 30 minutes of any outage."
+  RPO (Recovery Point Objective): how much data you can afford to lose.
+                    "We cannot lose more than 5 minutes of transaction data."
+                    RPO drives your replication strategy (sync = 0 data loss, async = some loss).
+
+NINES MATH — know this cold:
+
+  99.9%   = 1 - 0.001  → 0.001 × 8760 hours/year = 8.76 hours downtime.
+  99.99%  = 1 - 0.0001 → 0.0001 × 8760 = 0.876 hours = 52.6 minutes.
+  99.999% = 1 - 0.00001→ 0.00001 × 8760 = 0.0876 hours = 5.26 minutes.
+
+  COMPOUND AVAILABILITY — system with 3 services in series:
+    Each is 99.9% available.
+    Combined: 0.999 × 0.999 × 0.999 = 0.997 = 99.7%.
+    Series components MULTIPLY. More components = lower overall availability.
+    This is why microservices need resilience patterns at every hop.
+
+  PARALLEL AVAILABILITY (redundant components):
+    Two 99% servers in parallel: unavailable only when BOTH fail.
+    P(both down) = 0.01 × 0.01 = 0.0001 → 99.99% availability.
+    Parallel components dramatically increase availability.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: REPLICATION — SYNC vs ASYNC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SYNCHRONOUS REPLICATION:
+  Primary: write data → send WAL to replica → wait for replica ACK → commit to client.
+  Primary does NOT return "committed" until at least one replica has confirmed.
+
+  PROS: Zero data loss on failover. Replica is guaranteed to be current.
+        RPO = 0. If primary dies the instant after commit, replica has it.
+  CONS: Write latency increases by primary-to-replica RTT.
+        Same DC: +0.5ms (acceptable). Cross-region: +100ms (often unacceptable).
+        If replica dies: primary BLOCKS (unless configured to demote to async).
+        Availability suffers: primary can't commit without replica.
+
+  Use for: financial transactions, payment systems, inventory, anything RPO = 0.
+
+ASYNCHRONOUS REPLICATION (default in Postgres):
+  Primary: write → immediately commit to client → stream WAL to replica when possible.
+  Replica applies WAL asynchronously, potentially seconds behind.
+
+  PROS: Write latency unaffected by replica speed. Primary always available.
+        Replica dying doesn't affect primary.
+  CONS: If primary dies before replica catches up → replica is behind → data loss.
+        RPO > 0. Typically seconds of data loss possible.
+
+  Use for: read scaling (analytics replicas), non-critical data, when replica lag
+          is acceptable and RPO > 0 is tolerable.
+
+SEMI-SYNCHRONOUS REPLICATION (MySQL, some Postgres configs):
+  Write considered committed when at least 1 replica has received WAL
+  (not necessarily applied it). Middle ground between durability and performance.
+  1 replica guarantees you: even if primary dies, replica has the WAL → can apply.
+
+CHOOSING:
+  RPO = 0 (no data loss ever) → synchronous.
+  Low latency writes are critical + some data loss acceptable → asynchronous.
+  Multi-datacenter: sync to one in-DC replica (fast) + async to cross-DC replica (slow).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: FAILOVER — AUTOMATIC vs MANUAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT FAILOVER IS:
+  When the primary server dies, promote a replica to become the new primary.
+  Applications must be updated to point to the new primary (connection string change).
+
+MANUAL FAILOVER:
+  An operator detects the failure, verifies it's real, manually promotes a replica.
+  Steps: confirm primary is truly dead → run `pg_ctl promote` or `AWS RDS failover`
+         → update DNS or application config to point to new primary → verify.
+  RTO: minutes to hours. RPO: depends on replication mode.
+  Use for: small systems where downtime is acceptable, or to avoid split-brain.
+
+AUTOMATIC FAILOVER:
+  A monitoring system (Patroni, Postgres Sentinel, MHA) detects primary failure
+  and automatically promotes a replica. Applications see new primary within seconds.
+  RTO: 10-30 seconds. RPO: depends on replication mode (0 if sync, some if async).
+  Use for: production systems with SLA < 1 minute RTO.
+
+PATRONI (common Postgres HA solution):
+  A Python daemon that runs on each DB node.
+  Uses etcd or Consul (distributed KV) as the "brain" for leader election.
+  On primary failure: Patroni nodes race to write a leader lock in etcd.
+  Winner becomes primary. Others become replicas pointing to new primary.
+  Applications connect via a DNS name that Patroni updates on failover.
+
+THE SPLIT-BRAIN PROBLEM — CRITICAL:
+  Imagine: primary becomes slow (network hiccup). Monitoring times out.
+  Monitoring promotes replica 1 to primary. Now you have 2 primaries.
+  Original primary: still alive, still accepting writes.
+  New primary: also accepting writes.
+  Both write to different data sets. When they reconnect: CONFLICT. Data corruption.
+
+HOW TO PREVENT SPLIT-BRAIN:
+
+  STONITH (Shoot The Other Node In The Head):
+    Before the new primary can be promoted, the old primary MUST be physically
+    killed — power off via IPMI/ILO, or detach its network interface.
+    Forces the old primary offline before the new one takes over.
+    Harsh but completely prevents split-brain.
+
+  Quorum-based election:
+    A node can only become primary if it gets a MAJORITY vote from cluster members.
+    With 3 nodes: need ≥ 2 votes. If a network split creates a partition of
+    (1 node) vs (2 nodes): the 2-node side can elect a primary.
+    The 1-node side cannot get 2 votes → it can't become primary → it stops serving writes.
+    Only one side of the split has a primary. No split-brain.
+
+  Fencing tokens:
+    Each term of primary-ship has a monotonically increasing epoch/term number.
+    Old primary has epoch 5. New primary is elected with epoch 6.
+    Any write from epoch 5 is rejected by any node that has seen epoch 6.
+    Old primary's writes are fenced out by the higher epoch token.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: RAFT CONSENSUS — HOW DISTRIBUTED SYSTEMS AGREE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE CONSENSUS PROBLEM:
+  N servers need to agree on a single value (which server is the leader, what
+  the next log entry is) even when some servers are slow, crashed, or unreachable.
+  Without consensus: split-brain, data divergence, inconsistency.
+
+RAFT IS THE SOLUTION — used by: etcd, Consul, CockroachDB, TiKV, DynamoDB.
+
+RAFT IN 6 STEPS:
+  1. Election Timeout:
+     Each node waits a random time (150-300ms). First node to time out becomes
+     Candidate. Randomness prevents all nodes timing out simultaneously.
+
+  2. Vote Request:
+     Candidate sends RequestVote RPC to all other nodes.
+     Includes its current term number (epoch, starts at 1, increments each election).
+
+  3. Vote Granting:
+     A node votes YES if: (a) it hasn't voted this term, AND (b) the Candidate's
+     log is at least as up-to-date as its own (prevents a stale node becoming leader).
+
+  4. Leader Election:
+     Candidate gets majority votes → becomes LEADER for this term.
+     Sends heartbeat (empty AppendEntries RPC) every ~50ms to all followers.
+     Followers receiving heartbeats reset their election timeouts → no re-election.
+
+  5. Log Replication:
+     Client write → Leader appends to its log → sends AppendEntries to all followers.
+     Majority acknowledge → Leader commits the entry → responds to client.
+     Followers commit after receiving Leader's commit confirmation.
+
+  6. Failure & Re-election:
+     Followers don't receive heartbeat for 150-300ms → start election.
+     New leader elected. Old leader's uncommitted writes are overwritten.
+     Committed writes are never lost (majority had them before commit).
+
+WHY RAFT REQUIRES ODD NUMBER OF NODES:
+  Need majority = ⌊N/2⌋ + 1.
+  1 node: majority = 1. Tolerates 0 failures. Pointless for HA.
+  2 nodes: majority = 2. Tolerates 0 failures. (Need both for majority → no benefit.)
+  3 nodes: majority = 2. Tolerates 1 failure. ← minimum for fault tolerance.
+  5 nodes: majority = 3. Tolerates 2 failures. Common production choice.
+  4 nodes: majority = 3. Tolerates 1 failure. Same as 3 nodes but costs more.
+  → Even node counts give you no additional fault tolerance vs the next lower odd count.
+  → Always use 3, 5, or 7. Never 2, 4, or 6.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: CIRCUIT BREAKER PATTERN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE PROBLEM WITHOUT CIRCUIT BREAKERS:
+  Service A calls Service B. B is down or severely degraded (taking 10s per request).
+  A keeps retrying. Each retry holds a thread/connection for 10 seconds.
+  100 requests/sec × 10s timeout = 1000 concurrent connections waiting on B.
+  A's connection pool exhausted. A can't serve ANY requests — even those unrelated to B.
+  The failure in B cascades and kills A. Cascading failure spreads through system.
+
+THE CIRCUIT BREAKER ANALOGY:
+  Electrical circuit breaker: detects too much current → trips → breaks the circuit.
+  Prevents fire. You reset it once the overload is resolved.
+
+THREE STATES:
+
+  CLOSED (normal operation):
+    Requests flow through normally. Circuit breaker counts failures in a rolling window.
+    If failure rate < threshold (e.g., < 50% of last 20 calls): stay CLOSED.
+
+  OPEN (failure detected):
+    Failure rate exceeded threshold. Circuit OPENS.
+    ALL requests to B fail immediately — no attempt to call B at all.
+    Returns a fallback response (cached data, default, or error) instantly.
+    No threads blocked. No connection pool exhaustion. A stays healthy.
+    After a configured timeout (e.g., 30 seconds): transition to HALF-OPEN.
+
+  HALF-OPEN (probing recovery):
+    Allow a LIMITED number of requests through to B (e.g., 1 per second).
+    If they succeed: B has recovered. Transition back to CLOSED.
+    If they fail: B still sick. Return to OPEN for another timeout period.
+
+FALLBACK STRATEGIES (what to return when circuit is OPEN):
+  Cached response: return last known good data from Redis.
+  Default response: "unavailable" flag in the response, UI shows stale data.
+  Fail fast: return error immediately so caller can try an alternative.
+  Queue for retry: write request to a queue, process when B recovers.
+
+LIBRARIES:
+  Java: Hystrix (Netflix, now maintenance mode), Resilience4j.
+  Python: pybreaker, aiobreaker.
+  Go: gobreaker.
+  Most service meshes (Istio, Linkerd) have circuit breakers built in at the proxy level.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: RETRY WITH EXPONENTIAL BACKOFF + JITTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE PROBLEM WITH NAIVE RETRIES:
+  Service A: request fails. Immediately retry. Fails again. Immediately retry.
+  100 instances of A all doing the same at the same time.
+  "Retry storm" → hammers B with 100× normal traffic at the worst possible time
+  (B is already struggling). Makes B's recovery impossible.
+
+EXPONENTIAL BACKOFF:
+  Retry delay doubles with each attempt:
+    Attempt 1 fails → wait 1s
+    Attempt 2 fails → wait 2s
+    Attempt 3 fails → wait 4s
+    Attempt 4 fails → wait 8s
+    Attempt 5 fails → wait 16s → give up (max retries).
+
+  Gradually backs off. Gives B time to recover. Exponential growth means even
+  5 retries span 31 seconds of recovery window.
+
+JITTER (random delay offset):
+  Problem with pure exponential: all 100 instances of A backed off for 4 seconds.
+  At second 4: all 100 retry SIMULTANEOUSLY. Synchronized burst → B overwhelmed again.
+
+  Jitter adds randomness:
+    Actual delay = random(0, base_delay × 2^attempt)
+    or: delay = base_delay × 2^attempt + random(0, 1000ms)
+
+  Now 100 instances retry spread over a 4-second window. B sees steady trickle,
+  not a synchronized burst. Recovery is possible.
+
+  AWS SDK: uses "full jitter" by default. AWS blog post on this is a classic read.
+
+RETRY BUDGET:
+  Max 3-5 retries. Max total time across retries: 30-60 seconds.
+  After budget exhausted: fail the request. Return error. Don't retry forever.
+  Circuit breaker complements retries: after enough failures, stop retrying entirely.
+
+WHEN NOT TO RETRY:
+  4xx errors (client errors): retrying won't help (request is malformed/unauthorized).
+    Exception: 429 (Too Many Requests) → retry with backoff.
+  Non-idempotent writes: retrying a payment charge or POST that creates a resource
+    may create duplicates. Always use idempotency keys for critical writes.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: BULKHEAD + TIMEOUT PATTERNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BULKHEAD:
+  Named after ship compartments: if one section floods, watertight bulkheads
+  contain it. The ship stays afloat.
+
+  For services: isolate resource pools per downstream dependency.
+  Instead of one shared thread pool for all calls:
+    Pool A: 20 threads for calls to Service B.
+    Pool B: 10 threads for calls to Service C.
+  If Service B is slow and exhausts its 20 threads: only B calls are affected.
+  Service C's pool is unaffected. A continues serving C-related requests.
+  Without bulkheads: a slow B exhausts the shared pool → all requests die.
+
+TIMEOUTS:
+  Every network call MUST have a timeout. Without a timeout: a slow downstream
+  hangs your request indefinitely. Thread holds its connection forever. Pool drains.
+
+  Set timeouts at every layer:
+    Connection timeout: time to establish TCP connection. Should be < 1 second.
+    Read timeout: time to receive response after request sent. Matches SLA of downstream.
+    Total timeout: end-to-end budget for the entire operation chain.
+
+  Timeout values:
+    Same-DC API call: 100-500ms.
+    DB query (should be fast): 1-5 seconds.
+    Third-party API (email, payment): 5-30 seconds with circuit breaker.
+    Batch jobs / background processing: minutes or hours (different SLA).
+
+  CASCADING TIMEOUTS: total timeout for a request chain must be shorter at each hop.
+    User → Service A (timeout: 5s)
+    Service A → Service B (timeout: 2s)
+    Service B → DB (timeout: 500ms)
+  Service A's 5s > Service B's 2s > DB's 500ms.
+  If DB times out after 500ms → B still has 1.5s to handle the error.
+  If Service A timed out first (5s < B's 2s + processing), A would cancel the
+  request before B has a chance to respond. Timeouts must decrease as you go deeper.
+
+DEADLINE PROPAGATION:
+  Pass the remaining deadline through the call chain.
+  gRPC supports this natively via context deadlines.
+  If original request has 500ms left when reaching Service B, B knows not to
+  start a 1-second DB query — it would time out anyway. B fails fast.
+  Without deadline propagation: B starts work it can never finish, wasting resources.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 8: CHAOS ENGINEERING — TESTING RELIABILITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  Deliberately injecting failures in production (or staging) to verify that your
+  resilience patterns actually work. The alternative is discovering failures during
+  a real incident.
+
+Netflix's Chaos Monkey: randomly kills production servers. Forces engineers to
+  ensure every service survives server death. Now standard practice at top companies.
+
+WHAT TO INJECT:
+  Latency: add 500ms to all calls to Service X. Does the circuit breaker trip?
+  Failure: return 500 from Service Y. Does caller handle gracefully or cascade?
+  Resource starvation: CPU/memory pressure. Does autoscaling kick in?
+  Partition: block network between two services. Does the system degrade gracefully
+             or corrupt data?
+
+TOOLS: Netflix Chaos Monkey, Gremlin, LitmusChaos (Kubernetes), AWS FIS.
+FRAMEWORK: Observe → Hypothesize → Experiment → Verify.
+
+In interviews: mention chaos engineering when discussing reliability to show
+maturity. "We validate our circuit breakers with chaos tests in staging before
+shipping a new resilience pattern."
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: What is split-brain and how does quorum prevent it?
+A: Split-brain = two nodes both think they're the primary, both accepting writes.
+   Results in diverged data sets. On reconnection: conflicts, potential data loss.
+   Quorum fix: a node can only be promoted if it gets votes from a MAJORITY of
+   nodes. In a 3-node cluster with a network split (1 vs 2):
+   The 2-node side can elect a primary (2 ≥ 2/3+1 = 2). Accepts writes.
+   The 1-node side cannot get 2 votes → cannot become primary → stops writes.
+   Only one side is active. No split-brain.
+
+Q2: Why must a Raft cluster have an odd number of nodes?
+A: Even nodes waste resources without gaining fault tolerance. 4 nodes need 3 votes
+   (majority) → tolerates 1 failure. Same as 3 nodes but costs more.
+   Odd counts: 3→tolerate 1, 5→tolerate 2, 7→tolerate 3. Each adds fault tolerance.
+   Even counts add cost without adding fault tolerance vs the previous odd count.
+
+Q3: Circuit breaker is OPEN. You get a request that depends on the failing service.
+    What do you do?
+A: Return a fallback immediately. Options: cached response from Redis,
+   degraded response (partial data without the failed service's contribution),
+   queued request (store for later processing), or explicit error.
+   Never call the failing service when circuit is OPEN — that defeats the purpose.
+   After timeout, circuit transitions to HALF-OPEN to probe recovery.
+
+Q4: Service A calls B which calls C. A has 10s timeout, B has 8s, C has 6s.
+    What's wrong with this setup?
+A: Timeouts don't decrease toward the leaves — they should. C's 6s timeout
+   must complete + B must process before B's 8s is up. If C uses its full 6s,
+   B only has 2s for its own processing after C responds. But A allows 10s total —
+   that leaves 4s slack at A which is fine. However, the gap between B (8s) and A (10s)
+   is only 2s for B's own work. The real bug: if C takes 6s and B takes 2s, that's 8s
+   — exactly B's timeout, leaving 0 buffer. Should be C < B < A with clear margin.
+   Better: C=1s, B=3s, A=6s. Clear cascade of decreasing deadlines + processing buffer.
+
+Q5: Why add jitter to exponential backoff?
+A: Without jitter, all clients that failed at the same time retry at the same
+   intervals. Synchronized retries → burst traffic hits the recovering service
+   simultaneously → re-triggers the failure. Service can't recover.
+   Jitter randomizes each client's delay, spreading retries over time.
+   B sees a trickle of traffic during recovery, not a synchronized burst.
+
+
+================================================================================
+END OF MODULE SD-07 — RELIABILITY
+================================================================================
