@@ -1,0 +1,346 @@
+================================================================================
+MODULE — SD-04: KAFKA + QUEUES  (System Design Phase, Session 4)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: WHY QUEUES EXIST — THE CORE PROBLEMS THEY SOLVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before queues: Service A calls Service B directly (synchronous HTTP/gRPC).
+  Problem 1 — Tight coupling: A fails if B is down.
+  Problem 2 — Backpressure: if B is slow, A accumulates open connections → OOM.
+  Problem 3 — Traffic spikes: sudden 10× load hits B directly, overwhelming it.
+  Problem 4 — No retries: if B crashes mid-processing, the work is lost.
+
+A queue sits between A and B. A produces a message and returns immediately.
+B consumes at its own pace. They are decoupled in time.
+
+THE FOUR PROBLEMS QUEUES SOLVE:
+  1. Decoupling: producer and consumer don't need to be up simultaneously.
+  2. Buffering: queue absorbs traffic spikes. Consumer processes at steady rate.
+  3. Durability: messages persisted on disk. Consumer crash → message still there.
+  4. Fan-out: one message → many consumers. Send once, deliver to 10 services.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: TRADITIONAL MESSAGE QUEUES — RabbitMQ / SQS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT THEY ARE:
+  Point-to-point messaging. Producer sends a message → queue holds it →
+  consumer receives it → queue deletes it. Message has one destination.
+
+KEY CHARACTERISTICS:
+  Message deletion: once consumed and acknowledged, message is GONE.
+    You cannot replay it. You cannot have a second consumer read the same message.
+  Push model: broker actively pushes messages to consumers (RabbitMQ).
+    Or: consumer polls (SQS). Either way, it's meant to be consumed once.
+  Delivery guarantee: at-least-once (can re-deliver if consumer crashes before ack).
+
+USE CASES:
+  Task queues: email sending, PDF generation, image resizing, payment processing.
+  These are inherently one-to-one: one job, one worker, done.
+  Order matters less; isolation matters more (each job processed independently).
+
+RabbitMQ specifics:
+  Exchange routes messages to queues based on routing keys.
+  Supports complex routing: direct, fanout, topic, headers.
+  Messages can be made persistent (written to disk) for durability.
+  Good for task distribution across heterogeneous workers.
+
+SQS specifics:
+  AWS-managed. Zero ops. At-least-once delivery.
+  Visibility timeout: message becomes invisible to others when a consumer picks it.
+  If consumer doesn't ack within timeout → message reappears for retry.
+  Dead letter queue (DLQ): after N failures, message moved to DLQ for debugging.
+  FIFO queues: exactly-once, ordered within a message group. Slower throughput.
+
+WHEN TO USE TRADITIONAL QUEUES vs KAFKA:
+  Task distribution (one job, one worker) → RabbitMQ or SQS.
+  You need message routing/filtering per consumer → RabbitMQ.
+  On AWS, want zero ops → SQS.
+  Need to replay events, high throughput, multiple consumer types → Kafka.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: KAFKA — AN APPEND-ONLY DISTRIBUTED LOG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT KAFKA IS:
+  Not a queue. A distributed, partitioned, replicated commit log.
+  Messages are NEVER deleted when consumed. They're retained for a configured
+  period (default: 7 days, can be infinite). Any consumer can read any message
+  any number of times by seeking to any offset.
+
+THE PARADIGM SHIFT:
+  Traditional queue: message disappears after consumption. Model = task.
+  Kafka: message persists after consumption. Model = event/fact.
+  "User 42 placed order 99 at 14:30:05" is a fact. It doesn't disappear because
+  the order service read it. The analytics service also needs it. The fraud
+  detection service also needs it. All three read the same event independently.
+
+CORE VOCABULARY:
+  Topic: a named category/stream of messages. "orders", "user-signups", "clicks".
+  Partition: a topic is split into N partitions. Each partition is an ordered
+             append-only log on disk. Different partitions can be on different brokers.
+  Offset: a monotonically increasing integer per partition. Each message gets a
+          unique offset. Consumers track their position by offset.
+  Broker: a Kafka server. A cluster has many brokers for redundancy + throughput.
+  Producer: writes messages to a topic's partitions.
+  Consumer: reads messages from one or more partitions, tracking its offset.
+  Consumer Group: a group of consumer instances that together consume a topic.
+                  Each partition is assigned to exactly one consumer in the group.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: PARTITIONS — THE UNIT OF PARALLELISM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY PARTITIONS EXIST:
+  A single partition is a single ordered log → one consumer at a time.
+  More partitions = more parallelism = higher throughput.
+
+HOW PARTITIONING WORKS:
+  Producer chooses a partition for each message.
+  Default: hash(message_key) % num_partitions.
+  No key specified: round-robin across partitions.
+
+KEY SELECTION IS CRITICAL:
+  All messages with the same key go to the same partition → arrive in order.
+  Messages with different keys can go to different partitions → can arrive out of order.
+
+  Example: key = user_id.
+    All events for user 42 → same partition → always processed in order.
+    Events for user 43 → different partition → processed in parallel with user 42's events.
+    This gives per-user ordering without serializing all users.
+
+  Example: key = order_id.
+    "Order created", "Order shipped", "Order delivered" → same partition → in order.
+    Processing out of order would mark an order as delivered before it shipped.
+
+WHAT HAPPENS WITH A BAD KEY:
+  Key = "payment-service" for all payment events → all payments → one partition.
+  That partition becomes a hot spot. One consumer handles all payments.
+  Other partitions are idle. Throughput doesn't scale with more consumers.
+  Rule: partition key cardinality should be >> number of partitions.
+
+PARTITION COUNT DECISIONS:
+  More partitions = higher throughput BUT:
+    More file handles on broker (OS limits).
+    Longer leader election time on failover.
+    More memory on consumers (one thread per partition typically).
+  Typical: 10-50 partitions for moderate topics. 100+ for very high throughput.
+  You cannot reduce partition count (only increase). Choose carefully.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: CONSUMER GROUPS — SCALING CONSUMPTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A consumer group allows multiple consumers to share the work of reading a topic.
+
+THE RULE: each partition is assigned to exactly ONE consumer within a group.
+  Topic with 6 partitions + consumer group with 3 consumers:
+    Consumer A: partitions 0, 1
+    Consumer B: partitions 2, 3
+    Consumer C: partitions 4, 5
+  All 3 work in parallel. Throughput scales linearly with consumers (up to partition count).
+
+  Add a 4th consumer: one consumer has no partitions. It sits idle.
+  More consumers than partitions = wasted resources.
+  You cannot parallelize beyond the partition count within one consumer group.
+
+MULTIPLE CONSUMER GROUPS = INDEPENDENT READ HEADS:
+  Group "order-processing": reads every event, tracks its own offsets.
+  Group "analytics": reads same events, tracks its OWN offsets independently.
+  Group "fraud-detection": same topic, same data, separate offset tracking.
+
+  All three groups read ALL events, completely independently.
+  One group being slow does NOT affect others.
+  This is the fan-out pattern: one write → N different processing pipelines.
+
+REBALANCING:
+  When a consumer joins or leaves a group, Kafka reassigns partitions.
+  During rebalancing: all consumers in the group PAUSE. No messages consumed.
+  Keep rebalancing rare. Don't crash consumers repeatedly. Use static membership
+  (v2.3+) to avoid rebalance on predictable restart.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: OFFSETS AND DELIVERY GUARANTEES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+AN OFFSET is a per-partition position marker. "I've read up to offset 1042 in
+partition 3 of topic 'orders'." The consumer commits this offset after processing.
+
+THREE DELIVERY SEMANTICS:
+
+  AT-MOST-ONCE:
+    Commit offset BEFORE processing.
+    If the consumer crashes after committing but before processing → message skipped.
+    Never reprocessed. May lose data. Acceptable for: analytics, metrics, logs.
+
+  AT-LEAST-ONCE (default and most common):
+    Process first, THEN commit offset.
+    If consumer crashes after processing but before committing → message redelivered.
+    You process it again. Safe if your processing is idempotent.
+    Idempotent: processing the same message twice has the same result as once.
+    (INSERT INTO ... ON CONFLICT DO NOTHING → idempotent)
+    (charging a payment twice → NOT idempotent → need exactly-once instead)
+
+  EXACTLY-ONCE:
+    Atomic transaction: process + commit offset in one atomic operation.
+    Kafka Transactions (v0.11+): producer can write to multiple partitions + commit
+    consumer offsets in a single atomic transaction.
+    Most complex. Use for: payments, inventory, anywhere duplicate = money lost.
+
+OFFSET MANAGEMENT:
+  Committed offsets stored in a special Kafka topic: __consumer_offsets.
+  Not in Zookeeper (old design). The broker stores offsets.
+  auto.commit.interval.ms: Kafka can auto-commit on a timer (at-most-once risk).
+  Best practice: disable auto-commit, manually commit after successful processing.
+
+REPLAY:
+  Reset consumer offset to any point in the past → re-process all events.
+  Use case: bug found in order processing logic → fix bug → replay all orders
+  since deployment to recompute correct state. Invaluable for debugging.
+  Only possible because Kafka retains messages. RabbitMQ/SQS cannot do this.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: WHY KAFKA IS FAST — SEQUENTIAL DISK WRITES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Kafka sustains millions of messages/sec with commodity hardware. Why?
+
+  1. Sequential append-only writes.
+     Disk sequential write: ~500 MB/sec (SSD) or ~150 MB/sec (HDD).
+     Kafka only appends to partition log files. Never seeks to overwrite.
+     The OS page cache buffers writes → batched to disk sequentially.
+     One consumer reading partition 0 doesn't affect another reading partition 1.
+
+  2. Zero-copy I/O (sendfile).
+     Traditional pipeline: disk → kernel buffer → user space → kernel socket → NIC.
+     Kafka: disk → kernel buffer → NIC (via sendfile syscall). Skips user space copy.
+     Saves 2 memory copies per message at scale = massive throughput gain.
+
+  3. Batch compression.
+     Producers batch messages before sending. One network round trip for N messages.
+     Kafka compresses the batch (gzip, snappy, lz4). Consumers decompress.
+     Less network bandwidth, higher throughput.
+
+  4. The OS page cache does the work.
+     Kafka doesn't manage memory itself. OS page cache holds hot data.
+     Recent messages (which consumers mostly read) stay in page cache.
+     Most reads don't hit disk at all. Consumer reads at "memory speed."
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 8: EVENT SOURCING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  Instead of storing current state (account balance = ₹1000),
+  store the sequence of events that produced that state:
+    Event 1: Account opened, initial deposit ₹500
+    Event 2: Deposit ₹800
+    Event 3: Withdrawal ₹300
+  Current state = replay all events → ₹500 + ₹800 - ₹300 = ₹1000.
+
+WHY USE IT:
+  Complete audit trail: every change is recorded, immutable, timestamped.
+  Time travel: reconstruct state at any past point in time.
+  Event replay: re-derive any view of the data by replaying the event log.
+  Debugging: "what happened to account 42 at 14:30:05 on Jan 5th?" → exact answer.
+
+HOW KAFKA ENABLES IT:
+  Events are published to Kafka. They are never deleted (infinite retention).
+  A "projection" service consumes the event stream and builds materialized views
+  (current-state snapshots) in a DB or cache for fast reads.
+  If the projection is wrong: fix the projection, replay events, rebuild the view.
+
+TRADEOFFS:
+  Reading current state requires replaying the full event log (or a snapshot + tail).
+  Storage grows indefinitely. Events cannot be mutated or deleted.
+  Schema evolution is harder (old events must still be parseable).
+  Adds complexity. Don't use for simple CRUD systems.
+
+EVENT SOURCING vs OUTBOX PATTERN:
+  Event Sourcing: events ARE the state. No separate DB storage of current state.
+  Outbox Pattern: write state to DB AND event to an "outbox" table in the same
+                  transaction. A poller publishes outbox events to Kafka.
+                  Use when you need ACID for state writes but also want event streaming.
+                  Solves the dual-write problem: DB write + Kafka publish can't be atomic
+                  otherwise. Outbox transaction makes them atomic.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DECISION: KAFKA vs RABBITMQ vs SQS vs REDIS LISTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ┌──────────────────────────────────────────────────────┬──────────────────┐
+  │ Requirement                                          │ Use              │
+  ├──────────────────────────────────────────────────────┼──────────────────┤
+  │ High throughput (>50k msg/sec), retention, replay    │ Kafka            │
+  │ Fan-out to many independent consumers                │ Kafka            │
+  │ Event sourcing                                       │ Kafka            │
+  │ Simple task queue, one worker, no replay needed      │ RabbitMQ / SQS   │
+  │ Complex routing / message filtering                  │ RabbitMQ         │
+  │ AWS, zero ops, spiky load, DLQ built-in              │ SQS              │
+  │ Simple job queue, no dedicated broker, < 10k/sec     │ Redis List       │
+  │ Real-time pub/sub (no persistence needed)            │ Redis Pub/Sub    │
+  └──────────────────────────────────────────────────────┴──────────────────┘
+
+KAFKA IS OVERKILL WHEN:
+  You have < 1k messages/sec and don't need replay.
+  Your team has no Kafka operational experience.
+  You need complex message routing per consumer.
+  SQS + Lambda would be simpler and cheaper.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: Topic "orders" has 6 partitions. You add a 7th consumer to a group of 6.
+    What happens?
+A: The 7th consumer gets no partitions assigned. It sits idle.
+   Consumer groups assign exactly one consumer per partition.
+   To use 7 consumers productively, you'd need at least 7 partitions.
+
+Q2: Why must your partition key have high cardinality?
+A: Low cardinality → hot partitions. If you key by country and 80% of traffic
+   is India → 80% of messages → one partition → one consumer → bottleneck.
+   Remaining 5 consumers serve 20% of traffic. Uneven, wastes resources.
+   High cardinality (user_id, order_id) → even distribution → even load.
+
+Q3: What is an offset and why do consumers manage it themselves?
+A: Offset = a per-partition integer position. Consumer commits its offset to
+   mark "I've processed up to here." On crash+restart, resume from committed offset.
+   Kafka doesn't auto-delete consumed messages. Consumers control their own position.
+   This enables: replay (reset offset), multiple independent consumer groups reading
+   the same data, and varying delivery semantics (commit before or after processing).
+
+Q4: You built a payment processing consumer with at-least-once delivery.
+    A network glitch causes a payment to be re-delivered and processed twice.
+    How do you prevent duplicate charges?
+A: Idempotency key. Store a processed_payment_ids set (in DB or Redis).
+   Before processing: check if payment_id already exists → skip if yes.
+   After processing: mark payment_id as done in the same DB transaction.
+   This makes the consumer idempotent: processing same message twice = same result.
+
+Q5: What is the Outbox Pattern and what problem does it solve?
+A: The dual-write problem: you want to write to DB AND publish an event to Kafka,
+   but you can't make both atomic (different systems, no distributed transaction).
+   If DB write succeeds but Kafka publish fails → event lost, state inconsistent.
+   Solution: write DB row + outbox table row in ONE DB transaction (atomic).
+   A separate poller reads the outbox and publishes to Kafka, deletes the row.
+   DB transaction guarantees state and outbox are in sync. Kafka publish is
+   eventually consistent (retry until success).
+
+
+================================================================================
+END OF MODULE SD-04 — KAFKA + QUEUES
+================================================================================

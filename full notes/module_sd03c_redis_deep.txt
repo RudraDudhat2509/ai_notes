@@ -1,0 +1,385 @@
+================================================================================
+MODULE — SD-03c: REDIS DEEP  (System Design Phase, Session 3)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: WHAT REDIS IS — AND WHAT MAKES IT FAST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  Redis = Remote Dictionary Server. An in-memory data structure store.
+  "In-memory" means all data lives in RAM. That is both its superpower and its
+  constraint.
+
+WHY IT'S FAST:
+  1. RAM access is ~100ns. Disk access is ~100µs-10ms. 1000×-100,000× faster.
+  2. Single-threaded event loop (pre v6.0). No thread synchronization overhead.
+     No mutex contention. No context switching between threads.
+     One command runs completely before the next starts — fully serialized.
+  3. Simple data structures: no query planning, no parsing SQL, no row locking.
+     Commands are O(1) or O(log n). Direct memory access.
+
+THE SINGLE-THREAD TRAP INTERVIEWERS PROBE:
+  "Redis is single-threaded. How can it handle 100k requests/sec?"
+  Answer: single-threaded does not mean slow. At 100ns per operation, one thread
+  can do 10 million simple ops/sec. The bottleneck is almost always network I/O
+  (microseconds), not CPU (nanoseconds). Multiplexing handles many connections
+  in one thread via epoll/kqueue without blocking on each.
+
+  Redis 6.0+ added I/O threads for reading/writing to network sockets
+  (still single-threaded for COMMAND execution). Redis 7.0+ clusters distribute
+  across multiple shards, each single-threaded.
+
+THE CRITICAL MISTAKE MOST ENGINEERS MAKE:
+  Reinitializing the Redis client on every request.
+  Each new client = new TCP connection = TCP 3-way handshake = +1ms overhead.
+  At 10k req/s: 10 seconds of wasted time per second. System collapses.
+
+  Fix: one Redis client instance per application process, shared across requests.
+  The client maintains a connection pool internally. Redis's 100µs latency only
+  materializes when the connection already exists. Always pool connections.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: DATA STRUCTURES — EACH SOLVES A SPECIFIC PROBLEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Redis is NOT a key-value store with string values only. Each data structure is a
+weapon. Knowing which to pick is the core Redis skill.
+
+STRING:
+  Most basic. Key → value (string, int, float, serialized JSON, binary blob).
+  Operations: GET, SET, INCR, DECR, INCRBY, EXPIRE, TTL, SETNX.
+
+  INCR / INCRBY are atomic: read + increment + write in one command.
+  At 10k concurrent users all incrementing a counter → no race conditions.
+  This is the correct way to implement rate limiting counters:
+
+  INCR user:42:requests:2024-01-01-14   → atomically increment hourly count
+  EXPIRE user:42:requests:2024-01-01-14 3600  → auto-delete after 1 hour
+
+  SETNX (Set if Not eXists): used for distributed locks (see below).
+
+HASH:
+  Key → map of field:value pairs. Like a Python dict as a Redis value.
+  Ideal for storing objects where you read/update individual fields:
+
+  HSET user:42 name "Rudra" age 21 role "intern"
+  HGET user:42 name          → "Rudra"
+  HINCRBY user:42 age 1      → atomically increment one field
+  HMGET user:42 name role    → get multiple fields in one round trip
+
+  Better than storing a serialized JSON string when:
+    - You frequently update one field without reading the whole object.
+    - You want to avoid JSON deserialize/serialize overhead.
+
+LIST:
+  Doubly-linked list. O(1) push/pop from both ends. O(n) access by index.
+  Operations: LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN.
+
+  PRIMARY USE CASE — simple message queue:
+    Producer: LPUSH queue:email-jobs "{...job payload...}"
+    Consumer: RPOP queue:email-jobs  → gets oldest job (FIFO)
+    Blocking pop: BRPOP queue:email-jobs 30 → blocks up to 30s if empty.
+    Workers block on BRPOP rather than polling. CPU-efficient.
+
+  Also: activity feed (store last 100 actions with LPUSH + LTRIM).
+
+SET:
+  Unordered collection of unique strings. No duplicates. O(1) add/remove/check.
+  Operations: SADD, SREM, SISMEMBER, SMEMBERS, SUNION, SINTER, SDIFF.
+
+  USE CASES:
+    - "Has user 42 seen notification 99?" → SISMEMBER user:42:seen 99
+    - Find users who follow both Artist A and Artist B → SINTER followers:A followers:B
+    - Unique visitors per day → SADD visits:2024-01-01 user_id (SET deduplicates)
+    - Tags on a post → SADD post:99:tags "python" "ai" "redis"
+
+SORTED SET (ZSET):
+  Like SET but every member has a float score. Members sorted by score.
+  O(log n) add/remove. O(log n + m) range query where m = results returned.
+  Operations: ZADD, ZRANK, ZREVRANK, ZRANGE, ZREVRANGE, ZSCORE, ZRANGEBYSCORE.
+
+  THE CANONICAL REDIS USE CASE — leaderboard:
+    ZADD leaderboard 9840 "user:42"   → set user 42's score
+    ZADD leaderboard 11200 "user:7"   → set user 7's score
+    ZREVRANGE leaderboard 0 9 WITHSCORES → top 10 players with scores
+    ZREVRANK leaderboard "user:42"    → user 42's rank (0-indexed)
+
+  Also: priority queues (pop by score), rate limiting with sliding windows,
+  scheduling tasks by execution timestamp.
+
+STREAMS:
+  An append-only log. Like Kafka lite. Each entry has an auto-generated ID
+  (timestamp + sequence number). Supports consumer groups.
+  Operations: XADD, XREAD, XREADGROUP, XACK, XLEN, XRANGE.
+
+  USE CASES: event sourcing at small scale, real-time activity feeds,
+  simple message passing between microservices without Kafka overhead.
+  When Kafka is overkill (< 10k events/sec, no long-term retention needed).
+
+HYPERLOGLOG:
+  Probabilistic data structure for approximate COUNT DISTINCT.
+  Uses fixed 12 KB RAM regardless of data size. Error rate ~0.81%.
+
+  "How many unique users visited today?" → exact answer requires storing all
+  user IDs (potentially millions × 8 bytes = gigabytes).
+  HyperLogLog: 12 KB, ~0.81% error. Good enough for analytics dashboards.
+  PFADD, PFCOUNT.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: EVICTION POLICIES — WHEN RAM IS FULL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Redis is limited by available RAM. When maxmemory is hit, eviction policies
+determine what gets deleted to make room for new writes.
+
+  noeviction (default):
+    Refuse new writes with an error. Never delete anything.
+    Use when Redis is a primary store and data loss is unacceptable.
+    Risk: your app gets OOM errors when Redis is full. Must provision correctly.
+
+  allkeys-lru:
+    Evict the Least Recently Used key from ALL keys.
+    Best for pure caching: you don't care which key gets evicted, just keep
+    the most recently accessed data hot.
+    Most common production choice for cache workloads.
+
+  volatile-lru:
+    LRU eviction, but ONLY from keys with a TTL set.
+    Keys without TTL are never evicted.
+    Use when mixing permanent data (no TTL) and cached data (with TTL) in one Redis.
+    Permanent data is safe; cached data is evictable.
+
+  allkeys-lfu:
+    Evict the Least Frequently Used key from ALL keys.
+    Better than LRU when access patterns have long-lived hot keys that aren't
+    accessed recently but are important (e.g., a rarely-updated config that's
+    very hot when accessed).
+
+  volatile-ttl:
+    Evict keys with shortest remaining TTL first.
+    Use when you want items closest to expiry to be evicted first.
+
+  allkeys-random / volatile-random:
+    Evict randomly. For truly uniform access patterns only.
+    Almost never the right choice.
+
+HOW TO CHOOSE:
+  Pure caching, can recompute anything → allkeys-lru or allkeys-lfu.
+  Mixing session state (must keep) + cache (expendable) → volatile-lru.
+  Redis as primary store, no eviction ever → noeviction + alert on memory pressure.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: PERSISTENCE — RDB vs AOF
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Redis is in-memory, but it can survive restarts with persistence. Two mechanisms:
+
+RDB (Redis Database / Snapshot):
+  Periodically forks the process and writes a full snapshot of all data to disk.
+  Default: BGSAVE every 60 seconds if at least 10k keys changed.
+  File: dump.rdb. On restart: loads snapshot → data up to last snapshot restored.
+
+  PROS:
+    Single compact file. Fast restarts (load one file, done).
+    Low overhead: fork is cheap, child writes snapshot, parent keeps serving.
+    Good for disaster recovery (daily backups).
+
+  CONS:
+    Data since last snapshot is LOST on crash. If snapshot every 60s and
+    server dies at 59s: you lose 59 seconds of writes. Unacceptable for
+    session data or financial transactions cached in Redis.
+
+AOF (Append-Only File):
+  Every write command is appended to an AOF log file on disk.
+  On restart: replay all commands from the AOF → data fully reconstructed.
+  Fsync options: always (fsync every command), everysec (fsync per second), no.
+
+  PROS:
+    Much more durable than RDB. everysec mode: max 1 second of data loss.
+    always mode: zero data loss (like Postgres WAL) — but slowest.
+
+  CONS:
+    AOF file grows large over time (stores all commands, not just final state).
+    AOF rewrite (compaction) is needed periodically to shrink it.
+    Restart is slower than RDB: must replay potentially millions of commands.
+
+COMBINED (recommended for production):
+  Use both RDB + AOF. On crash: AOF provides more recent data.
+  On restart: if AOF exists, Redis prefers it over RDB for recovery.
+
+FOR CACHING ONLY (common case):
+  No persistence needed. If Redis goes down, cache is cold. DB handles it.
+  Turn off both RDB and AOF. Faster, simpler, no disk I/O overhead.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: CACHE PATTERNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CACHE-ASIDE (Lazy Loading) — most common:
+  Application logic:
+    1. Check Redis for key.
+    2. Cache hit → return value. Done.
+    3. Cache miss → query DB → store result in Redis with TTL → return value.
+
+  PROS:
+    Only data that's actually requested gets cached. Cache stays lean.
+    Application has full control of what goes in cache.
+    Cache failure doesn't break the system (falls through to DB).
+
+  CONS:
+    Cache miss = 2 round trips (Redis + DB). First request is slow.
+    Stale data: if DB is updated, cached value is outdated until TTL expires.
+    "Thundering herd" on cold start: many concurrent misses all hit the DB.
+
+  Fix for thundering herd:
+    Mutex lock: only first thread fetches from DB. Others wait for the lock,
+    then hit the now-warm cache. Serializes concurrent misses for the same key.
+
+WRITE-THROUGH:
+  On every DB write → also write to Redis synchronously.
+  App never reads a stale value because cache is always updated on write.
+
+  PROS: Cache is always consistent with DB. No stale reads.
+  CONS: Every write touches both DB and Redis (write overhead doubled).
+        Cache fills with data that might never be read (wastes RAM).
+
+  Best for: read-heavy data that MUST be consistent (user profile, settings).
+
+WRITE-BEHIND (Write-Back):
+  Write to Redis first (fast). Redis asynchronously writes to DB later.
+  Write latency is now Redis latency (~0.1ms), not DB latency (~10ms).
+
+  PROS: Dramatically faster writes. DB gets batched writes (more efficient).
+  CONS: If Redis crashes before async DB write → DATA LOSS. Data in Redis
+        but not yet in DB is gone. Only acceptable for non-critical data.
+
+  Best for: counters, view counts, non-critical ephemeral data.
+
+REFRESH-AHEAD (Proactive):
+  Before a key's TTL expires, proactively refresh it from DB.
+  Users never experience a cache miss → always served from cache.
+
+  CONS: Complexity. Must track TTL and trigger refresh at the right time.
+  Best for: very hot keys where any cache miss causes major latency spikes.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: COMMON PRODUCTION PATTERNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SESSION STORAGE:
+  After login: generate session token → HSET session:{token} user_id 42 role admin
+  EXPIRE session:{token} 3600.
+  On every request: HGET session:{token} user_id → O(1) auth check.
+  On logout: DEL session:{token}.
+  Why not DB: DB session check on every request = 10ms per request overhead.
+
+RATE LIMITING (fixed window):
+  INCR rate:user:42:2024-01-01-14:30   → atomic increment, returns new count
+  IF new_count == 1: EXPIRE rate:user:42:2024-01-01-14:30 60   → set TTL only on first call
+  IF new_count > 100: reject request.
+  Window resets naturally when key expires. Entirely in Redis: ~0.2ms per check.
+
+RATE LIMITING (sliding window — more precise):
+  Use ZSET where score = timestamp.
+  ZADD user:42:requests {now} {now}        → add current request
+  ZREMRANGEBYSCORE user:42:requests 0 {now-60}  → remove entries older than 60s
+  ZCARD user:42:requests                   → count requests in last 60s
+
+DISTRIBUTED LOCK (Redlock — simplified single-node):
+  SET lock:resource_x {unique_id} NX PX 30000
+  NX = set only if key does not exist (SETNX semantics, atomic).
+  PX = expire in 30000ms (auto-release if holder dies).
+  Returns OK if lock acquired, nil if already held.
+  Release: GET + DEL only if value matches your unique_id (LUA script for atomicity).
+
+  WHY UNIQUE_ID: prevents a slow thread from releasing another thread's lock.
+  Thread A acquires lock, takes 40s (lock expires at 30s).
+  Thread B acquires lock at 30s (A's expired).
+  Thread A wakes at 40s and tries to release → unique_id mismatch → no-op.
+
+PUB/SUB:
+  Publisher: PUBLISH channel:orders "{...event...}"
+  Subscriber: SUBSCRIBE channel:orders → receives all messages in real-time.
+  Use for: real-time notifications, live dashboards, broadcast events.
+  Limitation: no persistence. If subscriber is offline → messages are lost.
+  For persistence: use Streams (XADD/XREAD) instead of Pub/Sub.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: REDIS CLUSTER vs SENTINEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SENTINEL (High Availability for single Redis):
+  One master, N replicas. Sentinel processes monitor the master.
+  If master dies: Sentinels vote, elect a new master, update clients.
+  Use when: you need HA (failover) but don't need horizontal scale.
+  Data size: all fits on one node's RAM (< 100 GB typically).
+
+CLUSTER (Horizontal Scaling + HA):
+  Data sharded across 16,384 hash slots. Each master owns a subset of slots.
+  Each master has replica(s) for HA.
+  Commands with keys are routed to the correct shard automatically.
+  Client must be cluster-aware (most Redis clients support this).
+
+  Use when:
+    RAM needs exceed single node capacity.
+    Write throughput exceeds single node throughput.
+    Need linear scale-out.
+
+  Limitation:
+    Multi-key operations (MGET, SMEMBERS across keys) only work if all keys
+    are on the same shard (use hash tags: {user:42}:session and {user:42}:profile
+    map to the same slot).
+
+WHEN TO USE REDIS CLUSTER vs SINGLE REDIS:
+  < 50 GB data + < 100k ops/sec → single Redis + Sentinel for HA.
+  > 50 GB or > 100k ops/sec → Redis Cluster.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: Redis is single-threaded. How does it handle 100k requests/second?
+A: CPU is rarely the bottleneck. At 100ns per command, one thread can do 10M ops/sec.
+   Redis uses I/O multiplexing (epoll) to handle many network connections without
+   blocking. Each command is O(1) or O(log n). The bottleneck is network I/O
+   (~µs), not command execution (~ns). Redis 6.0+ added I/O threads for network
+   reads/writes while keeping command execution single-threaded.
+
+Q2: Your Redis lookup is 12ms instead of 0.1ms. What are the three most likely causes?
+A: (1) No connection pool: TCP handshake on every request adds ~1ms same-DC.
+   (2) Slow command: KEYS *, SMEMBERS on huge set, SORT — all O(n) and block
+       the single-threaded event loop for all other clients.
+   (3) Redis is cross-region: 100ms RTT minimum.
+
+Q3: Design a real-time global leaderboard for 50M users. Which Redis data structure?
+A: Sorted Set (ZSET). ZADD leaderboard {score} {user_id}. O(log n) per update.
+   ZREVRANGE leaderboard 0 99 WITHSCORES for top 100. O(log n + 100) = fast.
+   ZREVRANK leaderboard {user_id} for "your rank." O(log n).
+   50M users × ~50 bytes per member ≈ 2.5 GB. Fits comfortably in RAM.
+
+Q4: Which cache pattern should you use for user session data?
+A: Write-through. Session is written to cache AND DB on login. Every read hits
+   cache first. No stale data risk. Session token lookup is 0.1ms not 10ms.
+   TTL handles expiry. If Redis dies: fall back to DB (slightly slower but correct).
+
+Q5: What is a thundering herd and how do you prevent it in cache-aside?
+A: When a cached key expires, many concurrent requests all get a cache miss and
+   simultaneously query the DB — creating a sudden traffic spike.
+   Prevention: mutex lock on cache miss. First thread acquires lock, fetches from DB,
+   populates cache, releases lock. Other threads wait, then hit the warm cache.
+   Alternative: "jitter" in TTL values to stagger expiry times across keys.
+
+
+================================================================================
+END OF MODULE SD-03c — REDIS DEEP
+================================================================================

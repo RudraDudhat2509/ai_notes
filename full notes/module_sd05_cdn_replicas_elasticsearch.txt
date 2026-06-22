@@ -1,0 +1,348 @@
+================================================================================
+MODULE — SD-05: CDN + READ REPLICAS + ELASTICSEARCH  (System Design Phase, Session 5)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: CDN — SERVING CONTENT FROM THE EDGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  A Content Delivery Network is a globally distributed network of edge servers
+  (Points of Presence / PoPs) that cache content close to end users.
+  Providers: Cloudflare, AWS CloudFront, Akamai, Fastly.
+
+THE PROBLEM WITHOUT CDN:
+  User in Chennai requests a product image. Server is in Mumbai.
+  Propagation: ~10ms. Acceptable.
+  User in New York requests the same image. Server is in Mumbai.
+  Propagation: ~100ms RTT. Plus: TCP handshake, TLS, response transfer.
+  At 1 Gbps bandwidth with millions of users: origin server is crushed.
+
+THE CDN SOLUTION:
+  First request from NYC → miss → CDN fetches from origin (Mumbai) → caches copy
+  at CDN PoP in New York → all subsequent requests from NYC served from PoP.
+  Latency: 5-20ms (local delivery) instead of 100ms+ (cross-ocean).
+  Origin sees dramatically less traffic.
+
+HOW CACHING WORKS:
+
+  TTL (Time To Live):
+    Every cacheable response includes a Cache-Control header:
+      Cache-Control: max-age=86400   → cache for 24 hours.
+    CDN serves cached version for 24 hours without touching the origin.
+    After TTL expires: next request causes CDN to re-fetch from origin.
+
+  Cache Key:
+    Default cache key = URL. cdn.example.com/img/product-42.jpg always hits
+    the same cache entry regardless of who requests it.
+    Vary by header (e.g., Accept-Language): different cache entries per language.
+    Vary by cookie: personalized content is NOT cacheable (each user sees different).
+
+  Cache Invalidation — the hardest problem in distributed systems:
+    You updated product-42.jpg. CDN has the old version cached for 24 hours.
+    Solutions:
+      (1) Versioned URLs: /img/product-42-v2.jpg. New URL = new cache entry.
+          Old URL continues serving old version until TTL expires. Guaranteed delivery.
+          Best practice for static assets (CSS, JS, images) with build pipelines.
+      (2) Purge API: call CDN API to invalidate specific URLs immediately.
+          AWS CloudFront: CreateInvalidation. Cloudflare: Cache Purge.
+          Cost: charges per invalidation on some providers.
+      (3) Short TTL: Cache-Control: max-age=60. Stale for max 60 seconds.
+          Trade-off: more origin requests (less cache efficiency).
+
+WHAT CDN CACHES:
+
+  Static assets (cache → always):
+    Images, video, CSS, JavaScript, fonts. Content that doesn't change per user.
+    TTL: hours to days. Cache hit rate: 90%+.
+
+  HTML pages (cache → carefully):
+    Public pages (marketing, landing, product listings) → cacheable.
+    Personalized pages (dashboard, cart) → NOT cacheable. Serve from origin.
+    Or: cache the shell, fetch personalized data via API from origin.
+
+  APIs (cache → sometimes):
+    Public read-only APIs (product catalog, public profiles) → cacheable.
+    Authenticated/personalized APIs → not cacheable per request.
+
+CDN FOR UPLOAD (not just download):
+  CDN PoPs act as upload accelerators. User uploads from NYC → nearest PoP →
+  CDN routes internally over optimized backbone to your origin in Mumbai.
+  Faster than user → Mumbai directly over public internet.
+
+WHEN CDN IS NOT OPTIONAL:
+  Video streaming: 1080p video = 8 Mbps × 1M concurrent users = 8 Tbps.
+    No single origin can serve this. CDN is mandatory.
+  Global user base: >5% of users are cross-region from your origin.
+  Bandwidth > 1 Gbps from origin → add CDN regardless.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: READ REPLICAS — SCALING DB READS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE PROBLEM:
+  Your Postgres primary is at 90% CPU from read load. Writes need to go to primary.
+  But reads don't. Most apps are read-heavy (social: 100:1, e-commerce: 10:1).
+  Why make the primary serve reads it doesn't have to?
+
+WHAT REPLICAS ARE:
+  Additional Postgres instances that receive a stream of all writes from the primary
+  and apply them locally. Replicas stay in sync. Reads can be routed to any replica.
+  Replicas are read-only (cannot accept writes directly).
+
+HOW WAL STREAMING REPLICATION WORKS:
+  Primary: on every committed transaction → WAL record written to disk.
+  Replication: WAL records streamed over TCP to replica in near real-time.
+  Replica: WAL receiver applies each record to its local data pages.
+  Result: replica's data pages are a slightly-delayed mirror of primary's.
+
+REPLICATION LAG:
+  Time between a write committing on primary and becoming visible on replica.
+  Synchronous replication (sync_standby_names): primary waits for replica to confirm
+    WAL received before committing. Lag ≈ 0. Cost: every write is slower by the
+    primary-to-replica RTT. If replica dies: primary blocks (unless configured to fallback).
+
+  Asynchronous replication (default): primary commits immediately, replica applies
+    WAL asynchronously. Lag: typically 10-500ms. Replica may be slightly behind.
+    Primary performance unaffected. Replica can fall further behind under load.
+
+  Monitoring lag: SELECT * FROM pg_stat_replication → shows write_lag, flush_lag,
+    replay_lag per replica. Alert if replay_lag > 1 second.
+
+WHEN REPLICA LAG MATTERS:
+  User updates their profile → reads it immediately.
+  If read routes to replica that's 200ms behind → they see old profile.
+  This is the "read-your-writes" consistency problem.
+
+  SOLUTIONS:
+    (1) Route writes AND immediate reads after writes to primary.
+    (2) Use a session sticky flag: if user wrote recently, route to primary for next N seconds.
+    (3) Read from replica only for data the user didn't just modify.
+    (4) Synchronous replication for that specific user's data (expensive).
+
+WHICH QUERIES GO WHERE:
+  → Write (INSERT/UPDATE/DELETE): always to primary.
+  → Fresh reads (user just changed this): primary.
+  → Background reads (reports, analytics, exports): replica.
+  → Cached reads (cache hit): Redis (never hits DB).
+  → Heavy aggregations (daily stats, admin dashboards): replica (offload from primary).
+
+HOW MANY REPLICAS:
+  Start with 1 replica. Add more as read load grows.
+  Rule of thumb: add a replica when primary read CPU > 60% despite caching.
+  Each replica is a full copy of the data → scales reads linearly.
+  Writes don't scale: all writes still go to one primary.
+  If writes are the bottleneck: replicas don't help. Need sharding or Cassandra.
+
+READ REPLICAS vs REDIS CACHE:
+  Read replica: ~5-10ms per query (disk I/O + query execution).
+  Redis cache: ~0.1ms per lookup. 50-100× faster.
+  Cache first, replica second. Replica is for cache misses and complex queries.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: ELASTICSEARCH — FULL-TEXT SEARCH AT SCALE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE PROBLEM WITH DB FULL-TEXT SEARCH:
+  Query: SELECT * FROM products WHERE name LIKE '%wireless headphone%'
+  This requires a full table scan (index cannot help with leading wildcard).
+  At 10M products: read all 10M rows, string-match each. Seconds.
+  Result: unranked. Can't sort by relevance. "wireless headphone" ≠ "headphone wireless".
+
+WHAT ELASTICSEARCH IS:
+  A distributed search engine built on Apache Lucene.
+  Optimized for full-text search, fuzzy matching, faceting, and relevance ranking.
+  Stores data as JSON documents. Horizontally scalable across many nodes.
+  Not a general-purpose database. Use alongside your primary DB (Postgres/MongoDB),
+  not instead of it.
+
+THE INVERTED INDEX — THE CORE DATA STRUCTURE:
+  Standard DB index: row → fields. "Row 42 has name='Wireless Headphones'."
+  Inverted index: token → list of documents containing that token.
+
+  Input documents:
+    Doc 1: "Wireless Headphone Sony"
+    Doc 2: "Sony Bluetooth Speaker"
+    Doc 3: "Headphone with Noise Cancelling"
+
+  After tokenization + lowercasing:
+    "wireless" → [Doc 1]
+    "headphone" → [Doc 1, Doc 3]
+    "sony"      → [Doc 1, Doc 2]
+    "bluetooth" → [Doc 2]
+    "speaker"   → [Doc 2]
+    "noise"     → [Doc 3]
+    "cancelling"→ [Doc 3]
+
+  Query: "wireless headphone"
+  → Lookup "wireless" → [Doc 1]
+  → Lookup "headphone" → [Doc 1, Doc 3]
+  → Intersect: [Doc 1]. Return Doc 1. O(1) lookup per token + O(k) intersection.
+
+  NO table scan. Speed is independent of total document count.
+  At 10M documents: inverted index makes "wireless headphone" instant.
+
+RELEVANCE SCORING — TF-IDF and BM25:
+  Not all results are equal. A document with "headphone" in the title is more
+  relevant than one with "headphone" buried in a 5000-word description.
+
+  TF (Term Frequency): how often the term appears in this document. Higher = more relevant.
+  IDF (Inverse Document Frequency): how rare the term is across all documents.
+    "headphone" in a headphone store DB → appears in 50% of products → low IDF.
+    "noise-cancelling ANC" → appears in 5% → high IDF → better discriminator.
+
+  BM25 (Elasticsearch default): a tuned variant of TF-IDF. Also considers
+    document length (long docs artificially inflate TF → normalized out).
+
+  Result: search results sorted by relevance score. The most relevant document
+  is at the top. This is what Postgres LIKE queries can never do.
+
+ADDITIONAL SEARCH FEATURES:
+  Fuzzy matching: "headphne" → "headphone" (edit distance tolerance).
+  Stemming: "running" matches "run", "runs", "ran".
+  Synonyms: "tv" matches "television", "telly".
+  Autocomplete: prefix matching + suggest API for search-as-you-type.
+  Facets / aggregations: "show me all brands + count per brand" in one query.
+  Nested objects: search within arrays of objects without denormalizing.
+
+ELASTICSEARCH ARCHITECTURE:
+  Index: equivalent to a DB table. Contains documents.
+  Shard: each index is split into N primary shards (horizontal partitioning).
+         Default: 1 primary shard (change before indexing; can't change after).
+  Replica shard: each primary shard has R replicas. Reads can go to replicas.
+  Node: an ES server. Different node roles: master (cluster state), data, ingest.
+  Cluster: multiple nodes. Master node manages cluster state (shard assignments).
+
+  Write path: document → coordinating node → routes to primary shard → primary
+    applies change → replicates to replica shards → acknowledges.
+  Read path: query → coordinating node → routes to primary OR any replica shard
+    (load balanced) → shard executes search → results merged → returned.
+
+NEAR-REAL-TIME (NRT):
+  ES does NOT immediately make indexed documents searchable.
+  After writing: documents go to an in-memory buffer.
+  Every 1 second (default): buffer is flushed to a new Lucene segment → searchable.
+  This 1-second delay is called "refresh." ES is "near real-time" not real-time.
+  Force refresh (POST /index/_refresh) for immediate visibility (expensive — don't
+  use in hot write paths).
+
+HOW TO SYNC ES WITH POSTGRES:
+  Problem: your primary data is in Postgres. ES is a search layer.
+           When a product is updated in Postgres, ES must be updated too.
+           Dual-write is risky (partial failures leave them out of sync).
+
+  Solution 1 — Outbox + CDC:
+    Postgres Change Data Capture (Debezium) streams row changes to Kafka.
+    ES indexer consumer reads Kafka → indexes to ES.
+    Eventual consistency: ES lags seconds behind Postgres.
+
+  Solution 2 — Application layer dual-write + reconciliation:
+    Application writes to Postgres + ES in same request.
+    Background reconciliation job compares Postgres and ES periodically.
+    Simpler but eventual: ES may briefly be inconsistent.
+
+  Solution 3 — Periodic bulk reindex:
+    Every hour/day: re-export all data from Postgres → bulk index to ES.
+    Simple but high lag. Acceptable for analytics, not user-facing search.
+
+WHEN TO ADD ELASTICSEARCH:
+  ✓ Full-text search on large corpus (> 1M documents)
+  ✓ Need ranked relevance results
+  ✓ Need fuzzy matching, autocomplete, facets
+  ✓ Complex search with filters + text + aggregations in one query
+
+  ✗ Simple LIKE '%prefix%' on small table → Postgres full-text search (tsvector) is fine
+  ✗ Exact key lookups → Postgres/Redis
+  ✗ Need ACID for search data (ES offers eventual consistency only)
+  ✗ Startup or small scale — adds operational complexity
+
+POSTGRES vs ELASTICSEARCH:
+  Postgres tsvector: GIN index on text columns. Decent for < 1M rows.
+    Built-in, zero additional infrastructure, transactional.
+    Lacks: fuzzy matching, synonym, relevance tuning, autocomplete.
+  Elasticsearch: built for search. Handles 100M+ documents, fuzzy, ranked, facets.
+    Additional system to operate and keep in sync.
+
+  Rule: try Postgres tsvector first. Add ES when requirements exceed it.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: THE READ PATH — HOW THESE FIT TOGETHER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A full read path for a production e-commerce product listing request:
+
+  User request → CDN (cache hit? return immediately. Cache miss? continue.)
+  → Load Balancer → API Server
+  → Redis cache check (product data cached? return in 0.1ms. Miss? continue.)
+  → Postgres READ REPLICA (structured query with index. ~5-10ms.)
+  → Return to API → API serializes → CDN caches response → user.
+
+  User search request → CDN (not cacheable for personalized search)
+  → Load Balancer → Search API Server
+  → Elasticsearch (text query. Results in 10-50ms for 100M products.)
+  → Fetch full product data from Redis/Postgres by IDs returned by ES
+  → Return ranked results.
+
+LAYERED STRATEGY — Latency budget per layer:
+  CDN: 0ms (cache hit). Static assets never reach origin.
+  Redis: 0.1ms. Hot data never reaches DB.
+  Read Replica: 5-10ms. Structured queries that miss cache.
+  Elasticsearch: 10-50ms. Full-text search.
+  Primary DB: only writes and reads-after-writes.
+
+Each layer exists to protect the ones below it from traffic.
+The CDN protects the servers. Redis protects the DB. Replicas protect the primary.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: You updated product images but CDN is still serving old ones. What went wrong
+    and what's the right long-term fix?
+A: TTL hasn't expired yet. CDN serves cached version until max-age elapses.
+   Short-term fix: call CDN purge API to invalidate the specific URLs.
+   Long-term fix: use versioned URLs. product-42.jpg → product-42-v2.jpg.
+   New content = new URL = new cache entry. Old URL serves old content fine
+   (if still needed). Cache invalidation problem eliminated by design.
+
+Q2: Your app has 100:1 read:write ratio. Primary DB is at 80% CPU.
+    Writes are only 500/sec. What do you do?
+A: Add read replicas. The problem is read load, not write load.
+   Reads are 50k/sec overwhelming the primary. A replica handles reads.
+   Route all reads to replica(s), all writes to primary.
+   Also: add Redis cache for hot data (100:1 is very cache-friendly).
+   Do NOT add Cassandra (writes aren't the problem).
+
+Q3: What is replication lag and when is it a problem?
+A: Time between a commit on primary and that data being visible on replica.
+   Typically 10-500ms for async replication.
+   Problem for: read-your-writes consistency. User updates profile (write to primary),
+   immediately reads profile (from replica) → sees old data.
+   Fix: route reads that follow a recent write to primary for a short window.
+
+Q4: Explain the inverted index. Why can't Postgres LIKE '%query%' do the same?
+A: Inverted index maps each token to the list of documents containing it.
+   Query = intersect token lists → O(1) lookup, O(k) intersection.
+   Postgres LIKE '%query%': the leading wildcard means the index can't be used.
+   Postgres must scan every row and pattern-match. O(n). Slow at scale.
+   Inverted index is pre-built; LIKE is computed at query time over all rows.
+
+Q5: Why is Elasticsearch "near real-time" rather than real-time?
+A: After indexing a document, it goes to an in-memory buffer. ES flushes
+   the buffer to a new Lucene segment every 1 second (the refresh interval).
+   Documents are only searchable after the segment is created.
+   This 1s lag enables high write throughput (batch many writes per segment)
+   but means freshly indexed data isn't immediately searchable.
+   For real-time needs: use Redis or Postgres for immediate lookups;
+   use ES for search after a small propagation delay is acceptable.
+
+
+================================================================================
+END OF MODULE SD-05 — CDN + READ REPLICAS + ELASTICSEARCH
+================================================================================
