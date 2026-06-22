@@ -1,0 +1,335 @@
+================================================================================
+MODULE — SD-01: LATENCY TIERS  (System Design Phase, Session 1)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: THE LATENCY HIERARCHY — THE NUMBERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+These are the numbers every engineer carries in their head. Not for trivia —
+for reasoning. When an interviewer asks "is this acceptable?", these tiers are
+the answer.
+
+  ┌─────────────────────────────┬──────────────┬──────────────────┐
+  │ Operation                   │ Latency      │ Tier             │
+  ├─────────────────────────────┼──────────────┼──────────────────┤
+  │ L1 Cache hit                │ ~1 ns        │ Nanoseconds      │
+  │ L2 Cache hit                │ ~4 ns        │ Nanoseconds      │
+  │ RAM access                  │ ~100 ns      │ Nanoseconds      │
+  │ SSD random read             │ ~100 µs      │ Microseconds     │
+  │ Network — same datacenter   │ ~500 µs      │ Microseconds     │
+  │ HDD random read             │ ~10 ms       │ Milliseconds     │
+  │ Network — cross-region      │ ~100 ms      │ Milliseconds     │
+  └─────────────────────────────┴──────────────┴──────────────────┘
+
+Three orders of magnitude: ns → µs → ms.
+Each tier is roughly 1000× slower than the previous.
+
+EXCEPTION TO TATTOO ON YOUR ARM:
+  L1 Cache → RAM is 100×, NOT 1000×.
+  L1 = 1ns. RAM = 100ns. That's 100× — not 1000×.
+  Everywhere else the 1000× rule holds. L1→RAM is the only exception.
+  Interviewers specifically probe this. Say 100× without hesitation.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: WHY EACH TIER EXISTS — THE PHYSICS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+These numbers aren't arbitrary. Each gap has a physical reason.
+
+L1 CACHE (1ns):
+  Hardware: SRAM (Static RAM). Uses 6 transistors per bit to hold state.
+  Location: on-die, physically adjacent to the CPU execution units.
+  No refresh needed. Access in 1-2 clock cycles at 3GHz = ~0.3-0.6ns.
+  Why fast: electrons travel nanometers. Speed of light limitation is irrelevant
+  at this scale. The bottleneck is transistor switching time, not distance.
+
+L2 CACHE (4ns):
+  Hardware: still SRAM, but larger → physically farther from the core.
+  More transistors means higher capacitance = slightly slower charge/discharge.
+  Still on-chip (usually), but a few millimeters away. ~4 clock cycles.
+
+RAM / DRAM (100ns):
+  Hardware: DRAM (Dynamic RAM). Uses 1 transistor + 1 capacitor per bit.
+  Problem: capacitors leak charge. Must be refreshed thousands of times/second.
+  Location: off-chip, on the motherboard. Signal travels through memory bus.
+  Access = send address over bus + wait for row/column decode + get data back.
+  The bus traversal alone adds tens of nanoseconds. ~100ns total.
+
+SSD RANDOM READ (100µs):
+  Hardware: NAND flash cells (floating gate transistors). No moving parts.
+  But: random access requires an SSD controller to:
+    1. Translate logical block address → physical location
+    2. Activate the right flash page
+    3. Read from the flash array
+    4. Transfer data over PCIe/SATA bus
+  Even on NVMe SSDs (PCIe direct), this pipeline takes ~50-150µs.
+  SATA SSDs are slower (~200µs) due to the SATA protocol overhead.
+  Key insight: "no moving parts" ≠ "fast like RAM". Still 1000× slower than RAM.
+
+HDD RANDOM READ (10ms):
+  Hardware: spinning magnetic platters at 7200 RPM.
+  Mechanical steps for every random access:
+    1. Seek: arm physically moves to correct track (~5-10ms average seek time)
+    2. Rotational latency: wait for correct sector to spin under the head
+       7200 RPM = 120 rotations/sec = one rotation = 8.3ms. Average wait = 4ms.
+    3. Data transfer: once under the head, reading is fast (~100ms/sec)
+  Total: seek (5ms) + rotational latency (4ms) ≈ 10ms for small reads.
+  This is MECHANICAL. You cannot optimize past the physics of spinning disks.
+  Why HDDs still exist: sequential reads/writes are fast and cheap per GB.
+
+SAME-DATACENTER NETWORK (500µs):
+  Physical path: NIC → switch → NIC. Maybe 2-3 switch hops.
+  Distance: same building, at most a few hundred meters of cable.
+  Speed of light in fiber: 200,000 km/s → 1ms per 200km.
+  Propagation in DC: negligible (<1µs).
+  The real cost: TCP stack processing, kernel interrupts, network stack overhead.
+  With connection pooling (no TCP handshake): ~500µs.
+  Without pooling (fresh TCP connection each time): adds ~1ms for the handshake.
+
+CROSS-REGION NETWORK (100ms):
+  Physical path: datacenter → intercontinental fiber → datacenter.
+  Mumbai to New York: ~12,000km of fiber.
+  Speed of light in fiber (2/3 of c): 200,000 km/s.
+  One-way propagation: 12,000 / 200,000 = 60ms.
+  Round trip: 120ms.
+  Plus: TCP processing, buffering at network nodes, TLS.
+  Result: ~100ms RTT is the physical minimum. You cannot shrink this.
+  This is why CDNs exist: move content close to users to cut this RTT.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: SEQUENTIAL VS RANDOM ACCESS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The latency table above is for RANDOM ACCESS — jumping to an arbitrary location.
+Sequential access (reading blocks in order) has very different characteristics.
+
+  ┌─────────┬──────────────────┬──────────────────┐
+  │ Device  │ Sequential       │ Random           │
+  ├─────────┼──────────────────┼──────────────────┤
+  │ RAM     │ same (~100ns)    │ ~100ns           │
+  │ SSD     │ ~500 MB/s        │ ~100,000 IOPS    │
+  │ HDD     │ ~150 MB/s        │ ~150 IOPS        │
+  └─────────┴──────────────────┴──────────────────┘
+
+HDD random is 150 IOPS ≈ 6.7ms per op. HDD sequential can do 150MB/s because
+the arm never has to seek — it just reads track after track continuously.
+
+WHY THIS MATTERS FOR SYSTEM DESIGN:
+  Databases doing B-tree lookups = random reads = 10ms per HDD read.
+  That's why databases must fit their working set in RAM.
+
+  Kafka writes are sequential appends to a log file. Throughput is 500+ MB/s
+  on spinning disks — far more than random reads. This is why Kafka can handle
+  millions of events/sec while a traditional DB would crawl.
+
+  Cassandra's SSTable writes are also sequential (append-only). Fast writes are
+  a design choice, not just a marketing claim — the architecture forces sequential.
+
+RULE: whenever you see an architecture that uses append-only logs (Kafka, Cassandra,
+Redis AOF, Postgres WAL), it's exploiting the sequential access advantage.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: NETWORK LATENCY BREAKDOWN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+An HTTP request from a user's browser to your API server and back:
+
+  1. DNS lookup              → 1-50ms (depends on DNS cache state)
+  2. TCP handshake (SYN/SYN-ACK/ACK)  → 1 RTT = 100ms cross-region, 1ms same DC
+  3. TLS handshake           → 1-2 additional RTTs if TLS 1.2 (TLS 1.3 = 1 RTT)
+  4. HTTP request transmission → depends on payload size and bandwidth
+  5. Server processing       → your application code
+  6. HTTP response transmission → depends on response size and bandwidth
+
+For a CROSS-REGION request (user in NYC, server in Mumbai):
+  DNS: ~20ms (cached), TCP: ~120ms, TLS 1.3: ~120ms, processing: ~50ms,
+  response: ~20ms. Total ≈ 330ms before your app does anything.
+  → This is why you put static content on CDN and servers near users.
+
+For a SAME-DC internal service call:
+  No DNS (use service discovery). TCP: already pooled (0ms handshake overhead).
+  No TLS (internal traffic). Processing: your code. Network: ~500µs.
+  → This is why microservices in the same DC can call each other freely.
+
+KEY INSIGHT — TCP Connection Pooling:
+  If you DON'T pool connections, every request pays the TCP handshake:
+    Same DC: +1ms per request. At 10k req/s = 10 seconds of wasted time per second.
+    Cross-region: +100ms per request. Completely unacceptable.
+  Connection pools maintain N open TCP connections. Requests reuse them.
+  Redis, Postgres, HTTP clients — all must be pooled. Not optional at scale.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: LATENCY BUDGET — HOW TO USE THESE NUMBERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Product requirement: "every API response in under 200ms (p99)."
+This 200ms must be allocated across every step in the request path.
+
+  Example latency budget for a product listing API:
+  ┌──────────────────────────────┬───────────────┐
+  │ Component                    │ Budget (ms)   │
+  ├──────────────────────────────┼───────────────┤
+  │ Network (client → server)    │ 20ms          │
+  │ API gateway + routing        │ 5ms           │
+  │ Auth middleware              │ 2ms           │
+  │ Redis cache lookup           │ 1ms           │
+  │ DB query (if cache miss)     │ 15ms          │
+  │ Business logic               │ 10ms          │
+  │ Response serialization       │ 3ms           │
+  │ Network (server → client)    │ 20ms          │
+  │ Buffer                       │ 124ms         │
+  └──────────────────────────────┴───────────────┘
+
+If your DB query is taking 100ms, you've already blown the budget — even before
+network and serialization. Latency budgets force you to make explicit tradeoffs.
+
+HOW TO USE THIS IN INTERVIEWS:
+  When designing a system, state your latency budget upfront:
+  "Assuming 200ms p99 SLA, I'll allocate 10ms for the DB query, which means
+  I need an index on user_id+created_at to avoid a seq scan."
+
+  This shows you're thinking about end-to-end latency, not just component design.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: THE "IS THIS ACCEPTABLE?" TEST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The latency table is not a lookup table — it's a reasoning tool. When you hear
+any latency number, immediately map it to a tier and ask if it's expected.
+
+COMMON BENCHMARKS:
+
+  Redis lookup: should be 100-500µs (same DC, pooled connection).
+    If you see 12ms → connection not pooled (TCP handshake overhead), OR
+    Redis is cross-region, OR Redis is running a slow command (KEYS *, SMEMBERS
+    on a huge set), OR the connection pool is exhausted and waiting.
+
+  Postgres query with index: should be 1-10ms (SSD read + same DC network).
+    If you see 100ms → likely missing index (doing a seq scan), OR
+    table is too large for buffer pool (cache miss → actual disk read = 100µs
+    per SSD read × many pages), OR lock contention.
+
+  Postgres query without index on 100M rows: could be 10-30 seconds.
+    Sequential scan of 100M × 100 bytes = 10GB of data read from SSD.
+    10GB ÷ 500 MB/s = 20 seconds. This is why indexes exist.
+
+  API response time to user (same country): should be 50-200ms.
+    >500ms is noticeably slow. >1000ms is a problem. >3000ms users leave.
+
+  Cross-region DB replication lag: 100-500ms is expected. Design around it.
+    Don't route reads to a replica when you need read-your-writes consistency.
+
+ANTI-PATTERNS THESE NUMBERS PREVENT:
+
+  ✗ Reading from a cross-region DB on every request.
+    Each read adds 100ms minimum. At 10 reads per request = 1 full second gone.
+    Fix: read from a local read replica. Tolerate replication lag.
+
+  ✗ Calling an external API N times in a loop (N+1 pattern).
+    If each call is 500µs and N=100, that's 50ms just in serial network calls.
+    Fix: batch requests or parallelize with asyncio/Promise.all.
+
+  ✗ Not caching hot data — reading from DB on every request.
+    DB read = 10ms. Redis read = 0.1ms. At 10k req/s that's 100ms×10k=1000s
+    of DB time per second (requires 1000 DB connections) vs 10s of Redis time.
+    Fix: cache anything read far more than it's written.
+
+  ✗ Storing session data in the app server's RAM.
+    Breaks when you have multiple servers. But also: app server RAM access is
+    fast, so this works fine for single-server setups. The problem is scaling,
+    not latency. Redis solves both.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: LATENCY IN THE CONTEXT OF THROUGHPUT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Latency and throughput are related but different:
+  Latency = time to complete one operation.
+  Throughput = how many operations per second you can sustain.
+
+They're connected by Little's Law:
+  Throughput = Concurrency / Latency
+
+If your DB query takes 10ms (latency) and you want 10,000 QPS (throughput):
+  Concurrency needed = 10,000 × 0.010 = 100 concurrent connections.
+  A single Postgres instance handles ~100-300 connections before degrading.
+  So you're near the limit with 10ms queries at 10k QPS → need read replicas.
+
+If you cached in Redis (0.1ms latency):
+  Concurrency needed = 10,000 × 0.0001 = 1 concurrent connection.
+  Redis handles 100,000+ ops/sec single-threaded.
+  Cache hit = problem solved without any infrastructure scaling.
+
+This is why latency reduction often has an outsized impact: it doesn't just
+make individual requests faster, it reduces concurrency requirements across
+the board.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MEMORY ANCHORS & INTERVIEW TRICKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  "Nanoseconds stay in the CPU box."
+    L1, L2, RAM — all inside or tightly connected to the processor. < 1µs.
+
+  "Microseconds cross a wire."
+    SSD (PCIe bus), same-DC network. You're leaving the CPU box. 100µs–1ms.
+
+  "Milliseconds cross a room or a country."
+    HDD (mechanical seek), cross-region network. 10ms–100ms.
+
+  The L1→RAM exception: "L1 and RAM are both silicon, just far apart."
+    L1 is on-die. RAM is off-chip. Same material, different distance. 100× not 1000×.
+
+  Quick-convert in your head:
+    L1 → RAM: ×100
+    RAM → SSD: ×1000
+    SSD → same-DC: ×5 (100µs → 500µs)
+    same-DC → HDD: ×20 (500µs → 10ms)
+    HDD → cross-region: ×10 (10ms → 100ms)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: What is L1 cache → RAM latency?
+A: 100× (1ns → 100ns). NOT 1000×. The one exception.
+
+Q2: Your Redis lookup is taking 12ms. Name 3 possible causes.
+A: (1) No connection pool — TCP handshake on every call adds ~1ms same-DC.
+   (2) Redis is cross-region — 100ms round trip minimum.
+   (3) Slow command — KEYS *, SORT, SMEMBERS on large set blocks Redis event loop.
+   Correct expected latency: 100–500µs with connection pool, same DC.
+
+Q3: A service calls 5 microservices sequentially, each taking 20ms. Total = 100ms.
+    How do you get this under 30ms?
+A: Parallelize. Call all 5 simultaneously (asyncio.gather, Promise.all).
+   All 5 run concurrently. Total latency = slowest one = 20ms, not 100ms.
+   Network calls are I/O-bound — perfect for concurrent execution.
+
+Q4: You need to store user settings, read on every API request (100k req/s).
+    Settings are in Postgres. Is this acceptable?
+A: No. Postgres read = ~10ms. At 100k req/s you need 100k × 0.01 = 1000
+   concurrent DB connections. Postgres degrades well before that.
+   Fix: cache settings in Redis on login. Redis read = ~0.1ms. At 100k req/s
+   you need 100k × 0.0001 = 10 concurrent Redis ops. Trivial.
+
+Q5: Why is HDD sequential read much faster than HDD random read?
+A: Random read requires mechanical arm seek (~5-10ms) + rotational latency (~4ms).
+   Sequential read: arm is already positioned, reads contiguous tracks continuously.
+   No seek penalty. Throughput ~150 MB/s vs ~150 IOPS random.
+
+
+================================================================================
+END OF MODULE SD-01 — LATENCY TIERS
+================================================================================
