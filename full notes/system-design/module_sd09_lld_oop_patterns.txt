@@ -1,0 +1,766 @@
+================================================================================
+MODULE — SD-09: LLD — OOP, SOLID & DESIGN PATTERNS  (System Design Phase, Session 9)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: THE FOUR PILLARS OF OOP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+These are not vocabulary exercises. Each pillar solves a specific design problem.
+Know what problem each one solves, not just the definition.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENCAPSULATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT: Bundle data (fields) + behavior (methods) into a class. Hide internal state
+from outside. Only expose what callers need through a controlled interface.
+
+PROBLEM IT SOLVES:
+  Without encapsulation: BankAccount.balance is public. Any code can do:
+    account.balance -= 500
+  No validation, no audit log, no business rules enforced.
+  "The balance just went negative. Who changed it? When? Why?"
+
+  With encapsulation:
+    account.withdraw(500)  # the ONLY way to change balance
+    Inside withdraw(): checks balance > 500, logs the transaction, fires event.
+  You own the invariant. External code can't bypass your rules.
+
+IMPLEMENTATION:
+  Private fields, public methods. Getters/setters only when you need to expose
+  a field — and even then, setters can enforce validation.
+  In Python: _field (convention) or __field (name mangling). In Java: private keyword.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ABSTRACTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT: Expose WHAT an object does, hide HOW it does it.
+Define interfaces/abstract classes as contracts. Implementations are hidden.
+
+PROBLEM IT SOLVES:
+  Your PaymentService currently uses Stripe. Later, you need to add Razorpay.
+  Without abstraction: PaymentService is tightly coupled to Stripe SDK.
+  Adding Razorpay = rewriting PaymentService.
+
+  With abstraction:
+    class PaymentGateway:  # abstract interface
+      def charge(amount, currency, token): ...
+      def refund(charge_id, amount): ...
+
+    class StripeGateway(PaymentGateway): ...
+    class RazorpayGateway(PaymentGateway): ...
+
+  PaymentService depends on PaymentGateway, not Stripe or Razorpay.
+  Adding Razorpay = write a new class. PaymentService unchanged.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INHERITANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT: A child class extends a parent class, inheriting its fields and methods.
+Child can override methods or add new behavior.
+
+PROBLEM IT SOLVES:
+  Multiple entity types (Car, Truck, Motorcycle) share common attributes
+  (make, model, year, license_plate) and behaviors (start(), stop()).
+  Without inheritance: duplicate code in every class.
+  With inheritance: Vehicle parent class holds shared code. Children specialize.
+
+WHEN NOT TO USE IT (critical):
+  Inheritance = "IS-A" relationship. Car IS-A Vehicle. Valid.
+  UserManager IS-A List<User>? NO. UserManager HAS-A list of users. Use composition.
+  "Prefer composition over inheritance" — the more flexible and less coupled option.
+  Deep inheritance hierarchies become impossible to understand and change safely.
+  Rule: if you're going more than 2 levels deep, stop and use composition.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+POLYMORPHISM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT: One interface, many implementations. The same method call behaves differently
+depending on the actual object type at runtime.
+
+PROBLEM IT SOLVES:
+  Notification system: send email, SMS, push. Without polymorphism:
+    if type == "email": send_email(...)
+    elif type == "sms": send_sms(...)
+    elif type == "push": send_push(...)
+  Every time you add a new channel: find every if-elif block and add a case.
+  Fragile. Violates Open/Closed Principle.
+
+  With polymorphism:
+    class Notifier:
+      def send(recipient, message): ...
+
+    class EmailNotifier(Notifier): def send(...): # email logic
+    class SMSNotifier(Notifier): def send(...): # SMS logic
+    class PushNotifier(Notifier): def send(...): # push logic
+
+    for notifier in user.notifiers:
+      notifier.send(user, message)    # works for any notifier type
+
+  Add WhatsAppNotifier: one new class. Zero changes to calling code.
+  This is the power of "open for extension, closed for modification" (OCP).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: SOLID PRINCIPLES — THE 5 RULES OF MAINTAINABLE OOP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Each SOLID principle fixes a specific class of design rot. Know the principle,
+the symptom it cures, and a concrete example.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+S — Single Responsibility Principle (SRP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"A class should have only one reason to change."
+One class = one job. Not "one method" — one domain responsibility.
+
+SYMPTOM OF VIOLATION:
+  class OrderService:
+    def place_order(items): ...
+    def send_confirmation_email(): ...
+    def generate_pdf_invoice(): ...
+    def save_to_database(): ...
+    def calculate_tax(): ...
+  Every time email format changes, or PDF library changes, or tax rules change,
+  OrderService changes. Many reasons to change = multiple responsibilities.
+
+FIX:
+  OrderService: place_order() only. Coordinates others.
+  EmailService: send_confirmation_email().
+  InvoiceService: generate_pdf_invoice().
+  OrderRepository: save_to_database().
+  TaxCalculator: calculate_tax().
+  Each class has exactly one reason to change.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+O — Open/Closed Principle (OCP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"Open for extension, closed for modification."
+Add new behavior by adding new code, not modifying existing code.
+
+SYMPTOM OF VIOLATION:
+  def calculate_discount(user_type, amount):
+    if user_type == "student":    return amount * 0.2
+    elif user_type == "employee": return amount * 0.3
+    elif user_type == "vip":      return amount * 0.5
+    # adding senior discount = modify this function = risk breaking existing logic
+
+FIX:
+  class DiscountStrategy:
+    def calculate(amount): ...
+
+  class StudentDiscount(DiscountStrategy): def calculate(amount): return amount * 0.2
+  class VipDiscount(DiscountStrategy):     def calculate(amount): return amount * 0.5
+  class SeniorDiscount(DiscountStrategy):  def calculate(amount): return amount * 0.4
+  # adding senior = new class. calculate_discount() never touched.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+L — Liskov Substitution Principle (LSP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"A subclass must be substitutable for its parent class without breaking callers."
+If code works with Animal, it must work with Dog or Cat without knowing the difference.
+
+SYMPTOM OF VIOLATION:
+  class Rectangle:
+    def set_width(w): self.width = w
+    def set_height(h): self.height = h
+    def area(): return self.width * self.height
+
+  class Square(Rectangle):
+    def set_width(w): self.width = self.height = w  # forces square invariant
+    def set_height(h): self.width = self.height = h
+
+  Code that does:
+    r = get_rectangle()  # might return Square
+    r.set_width(5)
+    r.set_height(10)
+    assert r.area() == 50  # FAILS if r is a Square (area = 100)
+  Square IS-A Rectangle? Geometrically yes. Code-wise: NO. LSP violated.
+
+FIX: Don't inherit Square from Rectangle. Both inherit from Shape.
+  Or: remove the setter methods from Rectangle interface entirely.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+I — Interface Segregation Principle (ISP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"Don't force clients to depend on methods they don't use."
+Many small interfaces > one large interface.
+
+SYMPTOM OF VIOLATION:
+  class Worker:
+    def work(): ...
+    def eat(): ...
+    def sleep(): ...
+
+  class Robot(Worker):
+    def work(): # fine
+    def eat(): raise NotImplementedError  # robots don't eat!
+    def sleep(): raise NotImplementedError
+
+  Robot is forced to implement methods it cannot support.
+
+FIX:
+  class Workable:  def work(): ...
+  class Eatable:   def eat(): ...
+  class Sleepable: def sleep(): ...
+
+  class Human(Workable, Eatable, Sleepable): ...
+  class Robot(Workable): ...  # only what it actually supports
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+D — Dependency Inversion Principle (DIP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"Depend on abstractions, not concretions."
+High-level modules should not import low-level modules directly.
+Both should depend on an interface.
+
+SYMPTOM OF VIOLATION:
+  class OrderService:
+    def __init__(self):
+      self.db = MySQLDatabase()  # hard dependency on MySQL
+      self.email = GmailSMTP()   # hard dependency on Gmail
+
+  Switching from MySQL to Postgres → rewrite OrderService.
+  Testing → must spin up a real MySQL instance.
+
+FIX:
+  class OrderService:
+    def __init__(self, db: DatabaseInterface, mailer: MailerInterface):
+      self.db = db
+      self.mailer = mailer
+
+  OrderService depends on interfaces. Any DB, any mailer can be injected.
+  In tests: inject MockDatabase, MockMailer. Zero infrastructure needed.
+  In production: inject PostgresDatabase, SendgridMailer.
+  This is Dependency Injection (DI). Spring, FastAPI (Depends), Django all do this.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: DESIGN PATTERNS — THE THREE FAMILIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Design patterns are solutions to recurring design problems. Learn them by the
+problem they solve, not by memorizing their structure.
+
+Gang of Four (GoF) families:
+  Creational  → how objects are CREATED.
+  Structural  → how objects are COMPOSED together.
+  Behavioral  → how objects COMMUNICATE and distribute responsibility.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: CREATIONAL PATTERNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SINGLETON:
+  Ensure exactly one instance of a class exists globally. Provide global access.
+
+  Problem: database connection pool, config loader, logger — you want exactly one.
+  Multiple instances = multiple connection pools = resource waste / inconsistency.
+
+  Implementation (Python, thread-safe):
+    class Config:
+      _instance = None
+      _lock = threading.Lock()
+
+      def __new__(cls):
+        if cls._instance is None:
+          with cls._lock:
+            if cls._instance is None:   # double-checked locking
+              cls._instance = super().__new__(cls)
+        return cls._instance
+
+  Double-checked locking: avoids locking on every call (expensive) while
+  remaining thread-safe during initialization.
+
+  INTERVIEW CAVEATS:
+    Singletons are effectively global state. Hard to test (can't inject mocks easily).
+    Use dependency injection instead when testability matters.
+    In Python: module-level objects ARE singletons (modules imported once, cached).
+    In production codebases: Logger, Config, DB connection pool are common valid singletons.
+
+FACTORY METHOD:
+  Define an interface for creating objects, but let subclasses decide which class to instantiate.
+
+  Problem: you build a notification system. Currently sends email. Later adds SMS, push.
+  Without factory: if/elif chains scattered everywhere to choose the right notifier class.
+
+  class NotifierFactory:
+    @staticmethod
+    def create(type: str) -> Notifier:
+      if type == "email":  return EmailNotifier()
+      if type == "sms":    return SMSNotifier()
+      if type == "push":   return PushNotifier()
+      raise ValueError(f"Unknown type: {type}")
+
+  Callers ask the factory for a Notifier. They don't know or care which class they get.
+  Adding WhatsApp: add one line to the factory. Zero changes to callers.
+  When registered as a dict: factories[type] = class → fully data-driven, OCP compliant.
+
+BUILDER:
+  Construct complex objects step by step. Separate construction from representation.
+
+  Problem: constructing a complex object with many optional fields.
+    User(name, email, age, address, phone, avatar, bio, preferences, notifications_enabled, ...)
+    Constructor with 15 args = unreadable, error-prone.
+
+  class UserBuilder:
+    def __init__(self):   self._user = {}
+    def name(self, n):    self._user['name'] = n;   return self
+    def email(self, e):   self._user['email'] = e;  return self
+    def age(self, a):     self._user['age'] = a;    return self
+    def build(self):      return User(**self._user)
+
+  Usage (fluent interface / method chaining):
+    user = UserBuilder().name("Rudra").email("rudra@altagic.com").age(21).build()
+
+  Each method returns self for chaining. Build() creates the final object.
+  Only required fields need to be set. Optional fields have defaults.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: STRUCTURAL PATTERNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ADAPTER:
+  Convert an interface into another that clients expect. Bridge between incompatible interfaces.
+
+  Problem: your system expects a PaymentGateway interface. You integrate a new provider
+  (Razorpay) whose SDK has a completely different API signature.
+
+  class RazorpayAdapter(PaymentGateway):
+    def __init__(self):
+      self._razorpay = RazorpayClient(api_key=...)
+
+    def charge(self, amount, currency, token) -> str:
+      # translate to Razorpay's API format
+      response = self._razorpay.create_payment(
+        amount_paise=amount * 100,
+        currency=currency,
+        payment_token=token
+      )
+      return response['payment_id']
+
+  Your PaymentService calls charge() as always. The adapter translates.
+  Razorpay's SDK is wrapped; your system never knows it's there.
+
+DECORATOR:
+  Attach additional responsibilities to an object dynamically.
+  Alternative to subclassing for extending behavior.
+
+  Problem: logging, caching, rate limiting, metrics — these are cross-cutting concerns.
+  You don't want to bake them into every method.
+
+  class LoggingNotifier(Notifier):
+    def __init__(self, wrapped: Notifier):
+      self._wrapped = wrapped
+
+    def send(self, recipient, message):
+      logger.info(f"Sending notification to {recipient}")
+      start = time.time()
+      result = self._wrapped.send(recipient, message)
+      logger.info(f"Sent in {time.time() - start:.3f}s")
+      return result
+
+  Usage: notifier = LoggingNotifier(CachingNotifier(EmailNotifier()))
+  Stack decorators. Each wraps the previous. Call passes through the chain.
+  This is how Python's @functools.lru_cache, @login_required, @retry work.
+
+FACADE:
+  Provide a simplified interface to a complex subsystem.
+
+  Problem: sending an order involves: validate payment, charge card, update inventory,
+  generate invoice, send email, notify warehouse. Complex subsystem.
+  Callers shouldn't need to orchestrate all this.
+
+  class OrderFacade:
+    def place_order(self, cart, payment_info):
+      self._validator.validate(cart)
+      charge_id = self._payment.charge(payment_info, cart.total)
+      self._inventory.decrement(cart.items)
+      invoice = self._invoicer.generate(cart, charge_id)
+      self._email.send_confirmation(cart.user, invoice)
+      self._warehouse.notify(cart.items)
+
+  One method. Callers know nothing about the 6 subsystems.
+  Each subsystem remains independent and testable.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: BEHAVIORAL PATTERNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OBSERVER:
+  Define a one-to-many dependency: when one object changes state, all dependents
+  are notified and updated automatically.
+
+  Problem: user completes a purchase. 5 different systems need to react:
+  email service, analytics, inventory, loyalty points, warehouse. Without Observer:
+  OrderService knows about and directly calls all 5. Tight coupling. Adding a 6th
+  = modify OrderService.
+
+  class EventBus:
+    _subscribers: dict[str, list[Callable]] = defaultdict(list)
+
+    @classmethod
+    def subscribe(cls, event: str, handler: Callable):
+      cls._subscribers[event].append(handler)
+
+    @classmethod
+    def publish(cls, event: str, data: dict):
+      for handler in cls._subscribers[event]:
+        handler(data)
+
+  # Each service subscribes independently
+  EventBus.subscribe("order.completed", email_service.send_confirmation)
+  EventBus.subscribe("order.completed", analytics.track_purchase)
+  EventBus.subscribe("order.completed", inventory.decrement)
+
+  # OrderService just publishes — knows nothing about subscribers
+  EventBus.publish("order.completed", {"order_id": 99, "user_id": 42})
+
+  Adding a 7th subscriber: subscribe to the event. OrderService untouched.
+  This is the backbone of event-driven architecture. Kafka is a distributed Observer.
+
+STRATEGY:
+  Define a family of algorithms, encapsulate each, make them interchangeable.
+
+  Problem: sort a list of products. Different contexts need different sort orders:
+  price ascending, price descending, rating, newest first, relevance.
+  Without strategy: one sort function with 5 if/elif branches.
+
+  class SortStrategy:
+    def sort(self, products: list): ...
+
+  class PriceAscSort(SortStrategy):   def sort(self, p): return sorted(p, key=lambda x: x.price)
+  class RatingDescSort(SortStrategy): def sort(self, p): return sorted(p, key=lambda x: x.rating, reverse=True)
+
+  class ProductLister:
+    def __init__(self, strategy: SortStrategy):
+      self._strategy = strategy
+    def list(self, products):
+      return self._strategy.sort(products)
+
+  lister = ProductLister(PriceAscSort())
+  lister.list(products)  # sort by price
+
+  Swap strategy at runtime: lister._strategy = RatingDescSort(). Zero code change in ProductLister.
+  In Python: strategies are often just functions (first-class). Pass sorted(..., key=fn).
+
+COMMAND:
+  Encapsulate a request as an object. Enables: undo/redo, queuing, logging commands.
+
+  Problem: text editor needs undo. Without command pattern: each action directly
+  mutates the document. Undo means tracking what to reverse for every operation.
+
+  class Command:
+    def execute(self): ...
+    def undo(self): ...
+
+  class InsertTextCommand(Command):
+    def __init__(self, doc, position, text):
+      self.doc = doc; self.position = position; self.text = text
+
+    def execute(self): self.doc.insert(self.position, self.text)
+    def undo(self):   self.doc.delete(self.position, len(self.text))
+
+  history = []
+  cmd = InsertTextCommand(doc, 5, "hello")
+  cmd.execute()
+  history.append(cmd)
+  # Ctrl+Z:
+  history.pop().undo()
+
+  Extend to: redo stack, command queue (task queues!), replay, audit log.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: LLD METHODOLOGY — HOW TO APPROACH ANY DESIGN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STEP 1 — CLARIFY REQUIREMENTS (2-3 minutes)
+  What entities exist in this system? (Users, Products, Orders...)
+  What are the core operations? (Place order, cancel order, get status...)
+  What are the constraints? (One ticket per event? Can orders be modified?)
+  Scale out of scope for LLD — focus on class design, not distributed systems.
+
+STEP 2 — IDENTIFY ENTITIES (NOUNS → CLASSES)
+  Extract all nouns from the requirements. Each is a candidate class.
+  Filter: keep entities with STATE (data) + BEHAVIOR (methods). Remove pure-data structs.
+
+STEP 3 — IDENTIFY RELATIONSHIPS
+  IS-A → inheritance (use sparingly).
+  HAS-A → composition (preferred).
+  USES → dependency (pass as parameter, not stored reference).
+  MANAGES → one class coordinates others (service layer).
+
+STEP 4 — SPOT THE TRANSACTION CLASS PATTERN (crucial for LLD interviews)
+  Whenever TWO entities interact in a transaction, the transaction needs its own class.
+
+  Member borrows Book → Loan (holds member_id, book_id, due_date, returned_at)
+  Vehicle parks in Slot → Ticket (holds vehicle_id, slot_id, entry_time, exit_time)
+  User buys Product → Order + OrderItem
+  Student enrolls in Course → Enrollment (holds grade, enrolled_at, status)
+
+  The transaction class IS the bridge. It's not optional — it captures state that
+  belongs to neither entity alone. "When did this member borrow this book?" is a
+  question only Loan can answer. Neither Member nor Book can answer it alone.
+
+STEP 5 — ASSIGN METHODS TO THE RIGHT CLASS
+  Rule: a method belongs to the class whose data it primarily uses.
+  Book.is_available(): uses book.is_borrowed → on Book. ✓
+  Loan.is_overdue(): uses loan.due_date → on Loan. ✓
+  Library.find_available_books(): uses library.books collection → on Library. ✓
+
+STEP 6 — APPLY RELEVANT PATTERNS
+  Multiple strategies for one operation? → Strategy pattern.
+  Multiple event consumers? → Observer pattern.
+  Complex object construction? → Builder.
+  Need to support multiple types with same interface? → Factory.
+
+STEP 7 — WALK THROUGH A USE CASE
+  Narrate the happy path step by step:
+  "Member wants to borrow a book:
+   member.borrow(book, library) →
+   library checks book.is_available() →
+   creates Loan(member, book, due_date=today+14days) →
+   book.mark_borrowed() →
+   library.active_loans.append(loan) →
+   returns loan"
+
+  This surfaces missing methods, wrong class assignments, and wrong relationships.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 8: WORKED EXAMPLE — PARKING LOT LLD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REQUIREMENTS:
+  Multiple floors. Multiple slots per floor. Slots of different types (2W, 4W, bus).
+  Vehicle enters → get a ticket. Vehicle exits → pay, ticket closed.
+
+ENTITIES (nouns): ParkingLot, Floor, Slot, Vehicle, Ticket, Payment.
+TRANSACTION: Vehicle ↔ Slot → Ticket.
+
+CLASSES:
+
+  class Vehicle:
+    license_plate: str
+    vehicle_type: VehicleType  # enum: TWO_WHEELER, CAR, BUS
+
+  class Slot:
+    slot_id: str
+    slot_type: SlotType        # enum: TWO_WHEELER, COMPACT, LARGE
+    is_occupied: bool
+    vehicle: Optional[Vehicle]
+
+    def can_fit(vehicle: Vehicle) -> bool:
+      return self.slot_type compatible with vehicle.vehicle_type and not is_occupied
+
+    def assign(vehicle: Vehicle):
+      self.vehicle = vehicle; self.is_occupied = True
+
+    def free():
+      self.vehicle = None; self.is_occupied = False
+
+  class Ticket:
+    ticket_id: str
+    vehicle: Vehicle
+    slot: Slot
+    entry_time: datetime
+    exit_time: Optional[datetime]
+    payment: Optional[Payment]
+
+    def duration_hours() -> float:
+      end = self.exit_time or datetime.now()
+      return (end - self.entry_time).seconds / 3600
+
+  class Floor:
+    floor_number: int
+    slots: list[Slot]
+
+    def find_available_slot(vehicle: Vehicle) -> Optional[Slot]:
+      return next((s for s in self.slots if s.can_fit(vehicle)), None)
+
+  class ParkingLot:
+    floors: list[Floor]
+    active_tickets: dict[str, Ticket]  # ticket_id → Ticket
+
+    def park(vehicle: Vehicle) -> Ticket:
+      for floor in self.floors:
+        slot = floor.find_available_slot(vehicle)
+        if slot:
+          slot.assign(vehicle)
+          ticket = Ticket(vehicle=vehicle, slot=slot, entry_time=datetime.now())
+          self.active_tickets[ticket.ticket_id] = ticket
+          return ticket
+      raise NoAvailableSlotError("Lot is full")
+
+    def exit(ticket_id: str) -> Payment:
+      ticket = self.active_tickets[ticket_id]
+      ticket.exit_time = datetime.now()
+      amount = PricingStrategy.calculate(ticket)
+      payment = Payment(ticket=ticket, amount=amount)
+      ticket.payment = payment
+      ticket.slot.free()
+      del self.active_tickets[ticket_id]
+      return payment
+
+  class PricingStrategy:  # Strategy pattern
+    @staticmethod
+    def calculate(ticket: Ticket) -> float:
+      # Hourly rate by vehicle type
+      rates = {VehicleType.TWO_WHEELER: 20, VehicleType.CAR: 40, VehicleType.BUS: 100}
+      return rates[ticket.vehicle.vehicle_type] * ticket.duration_hours()
+
+PATTERNS USED:
+  Strategy: PricingStrategy (swap for dynamic/surge pricing without changing ParkingLot).
+  Facade: ParkingLot.park() and exit() hide floor/slot coordination from callers.
+  Transaction class: Ticket (Vehicle ↔ Slot interaction with state).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 9: WORKED EXAMPLE — LIBRARY MANAGEMENT LLD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+REQUIREMENTS:
+  Members borrow and return books. Books have limited copies. Track due dates.
+  Fine for overdue returns.
+
+ENTITIES: Library, Book, Member, Loan (transaction class), Fine.
+TRANSACTION: Member ↔ Book → Loan.
+
+CLASSES:
+
+  class Book:
+    isbn: str
+    title: str
+    author: str
+    total_copies: int
+    available_copies: int
+
+    def is_available() -> bool:
+      return self.available_copies > 0
+
+    def mark_borrowed():
+      if not self.is_available(): raise BookNotAvailableError()
+      self.available_copies -= 1
+
+    def mark_returned():
+      self.available_copies += 1
+
+  class Member:
+    member_id: str
+    name: str
+    email: str
+    active_loans: list[Loan]
+    MAX_LOANS = 3
+
+    def can_borrow() -> bool:
+      return len(self.active_loans) < self.MAX_LOANS
+
+  class Loan:
+    loan_id: str
+    member: Member
+    book: Book
+    borrowed_at: datetime
+    due_date: datetime          # borrowed_at + 14 days
+    returned_at: Optional[datetime]
+    fine: Optional[Fine]
+
+    def is_overdue() -> bool:
+      if self.returned_at:
+        return self.returned_at > self.due_date
+      return datetime.now() > self.due_date
+
+    def days_overdue() -> int:
+      ref = self.returned_at or datetime.now()
+      delta = ref - self.due_date
+      return max(0, delta.days)
+
+    def calculate_fine() -> Fine:
+      if not self.is_overdue(): return None
+      amount = self.days_overdue() * FINE_PER_DAY
+      return Fine(loan=self, amount=amount)
+
+  class Library:
+    books: dict[str, Book]      # isbn → Book
+    members: dict[str, Member]  # member_id → Member
+    active_loans: list[Loan]
+
+    def borrow(member: Member, book: Book) -> Loan:
+      if not member.can_borrow(): raise MemberLoanLimitError()
+      if not book.is_available():  raise BookNotAvailableError()
+      book.mark_borrowed()
+      loan = Loan(member=member, book=book,
+                  borrowed_at=datetime.now(),
+                  due_date=datetime.now() + timedelta(days=14))
+      member.active_loans.append(loan)
+      self.active_loans.append(loan)
+      return loan
+
+    def return_book(loan: Loan) -> Optional[Fine]:
+      loan.returned_at = datetime.now()
+      loan.book.mark_returned()
+      loan.member.active_loans.remove(loan)
+      fine = loan.calculate_fine()
+      if fine: loan.fine = fine
+      return fine
+
+    def search_by_title(query: str) -> list[Book]:
+      return [b for b in self.books.values() if query.lower() in b.title.lower()]
+
+THE KEY LESSON ABOUT LOAN:
+  Member.borrow(book) → due_date? returned_at? Which copy was borrowed?
+  This state belongs to NEITHER Member NOR Book. It belongs to Loan.
+  Whenever two entities interact with a time-stamped, stateful transaction,
+  that transaction is a class. Always.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: What is the Single Responsibility Principle? Give a concrete violation.
+A: A class should have one reason to change. Violation: UserService that handles
+   authentication, sends email, generates PDF reports, and saves to DB.
+   If email format changes → UserService changes. If PDF library updates → UserService.
+   Multiple reasons to change = multiple responsibilities.
+   Fix: AuthService, EmailService, InvoiceService, UserRepository. Each changes independently.
+
+Q2: Design a notification system that currently sends email but must easily
+    support SMS, push, and future channels. Which patterns?
+A: Factory + Strategy + Observer.
+   Factory: NotifierFactory.create("email") → decouples caller from concrete class.
+   Strategy: each notifier (Email/SMS/Push) implements Notifier.send() differently.
+   Observer: OrderService publishes "order.completed". Notifiers subscribe.
+   Adding WhatsApp: new WhatsAppNotifier class, subscribe to events. Zero else changes.
+
+Q3: In a Movie Booking system, User books Seat for a Show. What is the transaction class?
+A: Booking (or Reservation). It holds: user_id, seat_id, show_id, booked_at,
+   payment_status, seat_number. Neither User nor Seat can answer "when did this
+   user book this seat for this show and did they pay?" Only Booking can.
+
+Q4: What is the difference between Decorator and Inheritance for extending behavior?
+A: Inheritance: compile-time, static. LoggingEmailNotifier extends EmailNotifier.
+   But you can't combine LoggingEmailNotifier + CachingEmailNotifier without a third class.
+   Decorator: runtime, composable. LoggingNotifier(CachingNotifier(EmailNotifier())).
+   Stack any combination without combinatorial class explosion.
+   Decorator = open/closed + flexible. Inheritance = tightly coupled at compile time.
+
+Q5: Why is Singleton considered an anti-pattern in some codebases?
+A: Singletons are global state. Problems:
+   (1) Testing: can't inject a mock. Tests are polluted by each other's mutations.
+   (2) Hidden dependency: callers don't declare they depend on it (constructor injection
+       makes dependencies visible). Singleton hides dependencies.
+   (3) Initialization order: global singletons may depend on each other → initialization
+       order bugs that are hard to trace.
+   Use: module-level objects in Python (naturally singleton) or DI containers that
+   scope objects as singletons while still allowing injection + testing.
+
+
+================================================================================
+END OF MODULE SD-09 — LLD: OOP, SOLID & DESIGN PATTERNS
+================================================================================
