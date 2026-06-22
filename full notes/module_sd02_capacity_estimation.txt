@@ -1,0 +1,286 @@
+================================================================================
+MODULE — SD-02: CAPACITY ESTIMATION  (System Design Phase, Session 2)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: WHY CAPACITY ESTIMATION EXISTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Capacity estimation is the first 5 minutes of every system design interview.
+Its purpose is NOT to get exact numbers. It's to force architecture decisions
+grounded in data rather than instinct.
+
+A system serving 100 req/s has a completely different architecture from one
+serving 100,000 req/s. You can't skip this step — without numbers, every
+design decision is a guess.
+
+What an interviewer is watching for:
+  1. Do you know how to translate product metrics into technical requirements?
+  2. Do you know what numbers trigger architectural complexity?
+  3. Can you reason from first principles, or do you just memorize patterns?
+
+The output of estimation is not "I need 47.3 TB." It's:
+  "Storage is in the PB range → distributed object storage (S3/GCS), not Postgres."
+  "Writes are 50k/sec → Postgres is at its ceiling → consider Cassandra or Kafka."
+  "Reads are 1M/sec → cache layer mandatory, read replicas needed."
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: THE 7-STEP SKELETON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Run through these in order, every time. Write numbers on the board as you go.
+
+  Step 1 — WRITES/SECOND
+    Formula:  daily_writes ÷ 10^5
+    Why 10^5: 1 day = 86,400 seconds ≈ 100,000 = 10^5. This is your anchor.
+
+  Step 2 — READS/SECOND
+    Formula:  writes/s × read:write ratio
+
+  Step 3 — SIZE PER EVENT
+    Estimate KB or MB per individual record/event.
+    Be explicit: "a tweet is ~280 chars text + metadata ≈ 1KB total."
+
+  Step 4 — STORAGE PER DAY
+    Formula:  writes/s × size_per_event × 86,400
+    Or equivalently: daily_writes × size_per_event
+
+  Step 5 — TOTAL STORAGE
+    Formula:  storage/day × retention_in_days
+    Retention: social apps (2-5 years), logs (30-90 days), messages (forever).
+
+  Step 6 — BANDWIDTH (OUTBOUND)
+    Formula:  reads/s × size_per_event
+    This tells you if CDN is mandatory (>1 Gbps = almost always yes).
+
+  Step 7 — SERVERS NEEDED
+    Formula:  peak_req/s ÷ capacity_per_server
+    Typical single server: 1,000-5,000 req/s for a web API. More for static files.
+
+After each number: state what architecture decision it implies.
+Don't just produce numbers. Produce decisions.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: THE MOST CRITICAL ANCHOR — 1 DAY ≈ 10^5 SECONDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1 day = 24 hours × 60 min × 60 sec = 86,400 seconds ≈ 100,000 = 10^5.
+
+  NOT 10^6. That's 1,000,000 — off by 10×.
+
+COMMON MISTAKE:
+  "500M events/day ÷ 10^6 = 500 events/sec"  ← WRONG.
+  "500M events/day ÷ 10^5 = 5,000 events/sec" ← RIGHT.
+
+Dividing by 10^6 gives numbers that are 10× too small. Your architecture will
+be wrong: you'll design for 500 req/s when you actually need to handle 5,000/s.
+
+DRILL THIS UNTIL IT'S MUSCLE MEMORY:
+  50M/day   → 500/sec
+  100M/day  → 1,000/sec
+  500M/day  → 5,000/sec
+  1B/day    → 10,000/sec
+  2B/day    → 20,000/sec
+  10B/day   → 100,000/sec
+
+SHORTCUT (for mental math):
+  Step 1: Drop the "/day" unit.
+  Step 2: Divide by 10^5 = move decimal 5 places left.
+  Step 3: 500M = 5 × 10^8. Divide by 10^5 = 5 × 10^3 = 5,000.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: READ:WRITE RATIOS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Read:write ratio is the multiplier from writes/s to reads/s.
+Each product type has a characteristic ratio based on usage patterns.
+
+  ┌──────────────────────────────────┬───────────┬────────────────────────────────────┐
+  │ Product Type                     │ Ratio     │ Reasoning                          │
+  ├──────────────────────────────────┼───────────┼────────────────────────────────────┤
+  │ Social (Twitter, Instagram)      │ 100:1     │ 1 post read by 100s of followers   │
+  │ Messaging (WhatsApp, iMessage)   │ 1:1       │ Each message sent is read once     │
+  │ Video Streaming (YouTube)        │ 10:1      │ Few uploads, many views            │
+  │ Ride-sharing (Uber, Ola)         │ 5:1       │ Location writes frequent, reads    │
+  │                                  │           │ for matching + status updates      │
+  │ Search engine                    │ 1000:1    │ Indexes updated rarely, queries    │
+  │                                  │           │ constantly                         │
+  │ Audit log / append-only          │ 1:10      │ Write-heavy: events flow in fast,  │
+  │                                  │           │ queries are rare                   │
+  └──────────────────────────────────┴───────────┴────────────────────────────────────┘
+
+These ratios drive architecture:
+  100:1 read-heavy → aggressive caching, read replicas, CDN.
+  1:1 balanced → optimize both paths equally.
+  Write-heavy (< 1:1) → Kafka for ingest, Cassandra or TimescaleDB for storage.
+
+For group messaging: closer to N:1 where N = average group size (~5-10).
+Still far below social media, but not quite 1:1.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: PEAK VS AVERAGE — ALWAYS DESIGN FOR PEAK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Traffic is never flat. Step 1-2 give you AVERAGE load.
+Your system must survive PEAK load. Apply a multiplier.
+
+  Normal products (social, e-commerce): peak = 3× average.
+    Morning and evening commutes, lunch breaks. Predictable daily pattern.
+
+  Event-driven products (ticket sales, live streams, breaking news): peak = 10×.
+    One tweet from a celebrity. One IPL match ending. One product launch.
+    Your system goes from 0 to 10× in seconds. Must pre-provision or auto-scale.
+
+WHY PEAK MATTERS:
+  If average is 20k req/s and peak is 60k req/s (3×), design for 60k.
+  If your system only handles average load and traffic spikes 3×:
+    → Database overwhelmed → queries queue → latency explodes → timeouts
+    → Users see errors → revenue loss → incident post-mortem.
+
+EXAMPLE:
+  Average QPS: 5,000.
+  Peak multiplier: 3× → Design for 15,000 QPS.
+  Server capacity: 5,000 req/s per server.
+  Servers needed: 15,000 / 5,000 = 3 servers minimum. Add 1 buffer = 4 total.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: UNIT CONVERSION — STORAGE SIZES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1 KB = 10^3 bytes     (1,000)
+  1 MB = 10^6 bytes     (1,000,000)
+  1 GB = 10^9 bytes     (1,000,000,000)
+  1 TB = 10^12 bytes    (1,000,000,000,000)
+  1 PB = 10^15 bytes    (1,000,000,000,000,000)
+
+MOST COMMON MISTAKE: confusing TB and PB.
+  500M users × 3MB/user = 500 × 10^6 × 3 × 10^6 = 1.5 × 10^15 bytes = 1.5 PB.
+  NOT 1.5 TB. TB is 10^12. PB is 10^15. They differ by 1000×.
+
+MENTAL MATH SHORTCUT:
+  Multiply the user count and size first: 500M × 3MB = 1500M MB = 1500 TB.
+  Then convert 1500 TB ÷ 1000 = 1.5 PB.
+
+STORAGE OVERHEAD MULTIPLIERS (add to raw data size):
+  Replication factor (distributed systems): 3× (3 copies for durability)
+  Index storage: typically +20-30% of data size
+  Metadata / overhead: +5-10%
+  So raw estimate × 1.5 to 4× for real provisioned storage.
+
+  Example: 1.5 PB raw data × 3 replicas = 4.5 PB provisioned storage.
+  This is why S3 bills are larger than you expect.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: THE ARCHITECTURE DECISION TABLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Numbers from the skeleton feed directly into architecture decisions.
+
+  ┌───────────────────────────────┬──────────────────────────────────────────────────┐
+  │ Signal                        │ Architecture Implication                         │
+  ├───────────────────────────────┼──────────────────────────────────────────────────┤
+  │ Req/s < 1,000                 │ Single server, monolith is fine                  │
+  │ Req/s 1k–10k                  │ Load balancer + 2-5 app servers                  │
+  │ Req/s 10k–100k                │ Horizontal scaling, Redis cache mandatory         │
+  │ Req/s > 100k                  │ CDN, edge caching, aggressive sharding           │
+  ├───────────────────────────────┼──────────────────────────────────────────────────┤
+  │ Storage < 1 TB                │ Single Postgres instance is fine                 │
+  │ Storage 1–100 TB              │ Partitioned DB, possibly read replicas            │
+  │ Storage > 100 TB              │ Distributed storage: S3 + Cassandra/HDFS         │
+  │ Storage > 1 PB                │ Object storage (S3/GCS) is mandatory             │
+  ├───────────────────────────────┼──────────────────────────────────────────────────┤
+  │ Write rate < 5k/s             │ Postgres can handle it                           │
+  │ Write rate 5k–50k/s           │ Postgres with partitioning, OR Kafka ingest      │
+  │ Write rate > 50k/s            │ Cassandra or Kafka + time-series DB              │
+  ├───────────────────────────────┼──────────────────────────────────────────────────┤
+  │ Bandwidth > 1 Gbps            │ CDN is not optional                              │
+  │ Media files (images/video)    │ Object storage (S3) + CDN, never in Postgres     │
+  └───────────────────────────────┴──────────────────────────────────────────────────┘
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WORKED EXAMPLE 1: URL SHORTENER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Given: 100M new URLs shortened per day. Read:write = 10:1. 500 bytes per URL.
+5 year retention. Peak multiplier 3×.
+
+  Step 1 — Writes/sec:   100M ÷ 10^5 = 1,000 writes/sec
+  Step 2 — Reads/sec:    1,000 × 10 = 10,000 reads/sec (average)
+                         Peak reads = 10,000 × 3 = 30,000 reads/sec
+  Step 3 — Size/event:   500 bytes
+  Step 4 — Storage/day:  100M × 500B = 50 GB/day
+  Step 5 — Total storage: 50 GB × 365 × 5 = 91 TB
+  Step 6 — Bandwidth:    10,000 × 500B = 5 MB/sec = 40 Mbps (trivial)
+  Step 7 — Servers:      30,000 req/s ÷ 5,000 req/s per server = 6 servers
+
+DECISIONS:
+  91 TB → partitioned Postgres (or Cassandra). Single node would struggle.
+  10k-30k reads/sec → Redis cache mandatory (popular short URLs cached).
+  5 MB/s bandwidth → CDN not needed for URLs themselves (tiny payloads).
+  Redirect is the hot path → optimize for read latency (cache in Redis).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WORKED EXAMPLE 2: WHATSAPP MESSAGES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Given: 1B users. Each sends 50 messages/day. Average message size 1KB.
+Read:write = 1:1. Keep messages forever. Peak 3×.
+
+  Step 1 — Writes/sec:   1B × 50 ÷ 10^5 = 50B ÷ 10^5 = 500,000/sec
+  Step 2 — Reads/sec:    500,000 × 1 = 500,000/sec
+                         Peak = 500,000 × 3 = 1.5M req/sec
+  Step 3 — Size/event:   1KB
+  Step 4 — Storage/day:  50B × 1KB = 50 TB/day
+  Step 5 — Total storage (5 years): 50 TB × 365 × 5 = 91 PB
+  Step 6 — Bandwidth:    500k × 1KB = 500 MB/sec = 4 Gbps
+  Step 7 — Servers:      1.5M ÷ 5,000 = 300 servers
+
+DECISIONS:
+  500k writes/sec → Postgres is completely dead. Cassandra (built for this).
+  91 PB storage → object storage + tiered archival (cold messages to cheaper tier).
+  1.5M reads/sec → massive caching layer, sharded Redis cluster.
+  4 Gbps bandwidth → CDN for media, but text messages are fine without.
+  300 servers → auto-scaling groups, load balancers in front.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: Instagram has 500M users, each uploads 1 photo/day at 3MB. Daily storage?
+A: 500M × 3MB = 500 × 10^6 × 3 × 10^6 = 1.5 × 10^15 bytes = 1.5 PB/day.
+   NOT 1.5 TB. TB = 10^12, PB = 10^15. Off by 1000× if you confuse them.
+
+Q2: A system gets 2B requests/day. Peak:average = 3×. Peak QPS?
+A: Average = 2B ÷ 10^5 = 20,000 QPS. Peak = 20,000 × 3 = 60,000 QPS.
+
+Q3: Chat app — what read:write ratio?
+A: 1:1. Every message sent (write) is read once by recipient.
+   Reads ≈ writes. Not 100:1 like social — only one person receives each message.
+
+Q4: You estimate 10 TB of storage and 2,000 writes/sec. Which DB do you use?
+A: 10 TB and 2,000/sec are both within Postgres's range (< 50 TB, < 5k writes/s).
+   Single sharded Postgres or partitioned Postgres is fine. Cassandra overkill.
+
+Q5: Your system needs to handle a sudden 10× traffic spike (new product launch).
+    You designed for 3× peak. What happens and how do you prevent it?
+A: At 10× you're 3× over capacity → cascading failures. Prevention:
+   (1) Queue ingest (Kafka) to absorb bursts — consumers process at their own pace.
+   (2) Circuit breakers to fail fast rather than cascade.
+   (3) Auto-scaling with pre-warming (scale out 10 min before expected spike).
+   (4) Shedding: rate limit non-critical features, degrade gracefully.
+
+
+================================================================================
+END OF MODULE SD-02 — CAPACITY ESTIMATION
+================================================================================

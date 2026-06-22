@@ -1,0 +1,413 @@
+================================================================================
+MODULE — SD-03a: SQL & ACID DEEP  (System Design Phase, Session 3)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: ACID — OVERVIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ACID is NOT a checklist. It's four different mechanisms solving four different
+failure modes. Every letter has a specific failure it prevents and a specific
+mechanism that prevents it. If you can't name the mechanism, you don't know ACID.
+
+  A — Atomicity   → prevents partial writes from crashes mid-transaction
+  C — Consistency → prevents constraint-violating data from being written
+  I — Isolation   → prevents concurrent transactions from corrupting each other
+  D — Durability  → prevents committed data from being lost on crash
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: ATOMICITY — ALL OR NOTHING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE FAILURE MODE IT SOLVES:
+  Bank transfer: debit ₹500 from Account A, credit ₹500 to Account B.
+  Two operations. If server crashes after debiting A but before crediting B:
+  ₹500 has vanished from the system. Partial application corrupted your data.
+
+THE GUARANTEE:
+  All operations in a transaction succeed together, or none of them do.
+  No partial application. Ever.
+
+THE MECHANISM — WAL (Write-Ahead Log):
+  Before making any change to actual data pages on disk, Postgres writes to
+  an append-only log file what it is about to do:
+    "BEGIN txn_200"
+    "UPDATE accounts SET balance = balance - 500 WHERE id = A"
+    "UPDATE accounts SET balance = balance + 500 WHERE id = B"
+    "COMMIT txn_200"
+
+  The key word: WRITE-AHEAD. The log entry is written before the data change.
+
+  On crash mid-transaction:
+    → Postgres restarts, reads WAL from last checkpoint.
+    → Finds txn_200 has no COMMIT entry → the transaction was incomplete.
+    → Rolls back: reverses any partial changes already made to data pages.
+    → Database is back to the state before the transaction started.
+
+  On crash after COMMIT is written to WAL but before data pages updated:
+    → Postgres restarts, sees COMMIT in WAL.
+    → Replays the log entries to apply the changes to data pages.
+    → Data is recovered completely.
+
+  The WAL is the single source of truth. Data pages are just a cache of the log.
+
+SIDE EFFECT YOU MUST KNOW:
+  The same WAL used for crash recovery is also streamed to replicas for
+  replication. One mechanism; two uses: crash safety + standby sync.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: CONSISTENCY — CONSTRAINTS ALWAYS HOLD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE FAILURE MODE IT SOLVES:
+  A foreign key constraint says every tweet must reference a valid user_id.
+  Without enforcement: INSERT INTO tweets (user_id, content) VALUES (99999, '...')
+  where user_id 99999 doesn't exist → tweets table now has orphaned data.
+  Queries break. Joins return wrong results. Data is incoherent.
+
+THE GUARANTEE:
+  Every transaction must leave the database in a valid state — one that satisfies
+  all defined constraints: NOT NULL, UNIQUE, CHECK, FOREIGN KEY, custom triggers.
+
+THE MECHANISM:
+  Constraint enforcement at write time. Before committing any transaction, Postgres
+  checks every relevant constraint. If any is violated → transaction rejected,
+  rollback triggered, error returned to the application.
+
+CRITICAL NUANCE:
+  Consistency is NOT automatic. You define the rules; the DB enforces them.
+  If you forget to add a FOREIGN KEY constraint, Postgres won't check it.
+  Garbage in → garbage stored. The DB only enforces what you told it to enforce.
+
+  The "C" in ACID is the weakest letter — it's really just "the DB enforces
+  your constraints." The other three letters are much more mechanically specific.
+
+CONSTRAINT TYPES IN POSTGRES:
+  NOT NULL           → column must have a value
+  UNIQUE             → no two rows can have the same value in this column
+  CHECK              → custom condition must be true (e.g., age > 0)
+  FOREIGN KEY        → value must exist in referenced table
+  PRIMARY KEY        → NOT NULL + UNIQUE (implicit index created)
+  EXCLUSION          → no two rows can overlap (e.g., booking time ranges)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: ISOLATION — CONCURRENT TRANSACTIONS DON'T INTERFERE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE FAILURE MODE IT SOLVES:
+  Two users buy the last concert ticket simultaneously.
+  Both read: "1 ticket remaining."
+  Both pass the check: inventory > 0.
+  Both decrement: inventory = 0 → -1.
+  You sold 1 ticket twice. Without isolation, concurrent access corrupts data.
+
+THE GUARANTEE:
+  Concurrent transactions don't see each other's in-progress work.
+  Each transaction sees a consistent, stable view of the database.
+
+THE MECHANISM — MVCC (Multi-Version Concurrency Control):
+  Instead of locking rows when reading (which blocks all concurrent access),
+  Postgres keeps MULTIPLE VERSIONS of every row, each stamped with a transaction ID.
+
+  How it works:
+    1. When your transaction starts, it receives a snapshot ID.
+    2. Every row has a "created by txn X, deleted by txn Y" stamp.
+    3. Your reads see only row versions where X < your snapshot ID AND Y is null
+       (or Y > your snapshot ID). In-progress transactions by others are invisible.
+    4. Writers create NEW row versions rather than overwriting existing ones.
+    5. Other readers see the old version; new readers see the new version.
+
+  Result: readers NEVER block writers. Writers NEVER block readers.
+  Both proceed simultaneously with zero lock contention.
+
+  Cost: old row versions (dead tuples) accumulate. VACUUM cleans them up.
+  At high write rates, VACUUM falling behind = table bloat = everything slows.
+  This is one of Postgres's known scaling ceilings.
+
+ISOLATION LEVELS (weakest to strongest):
+  ┌──────────────────────┬─────────────┬─────────────────────┬──────────────┐
+  │ Level                │ Dirty read  │ Non-repeatable read │ Phantom read │
+  ├──────────────────────┼─────────────┼─────────────────────┼──────────────┤
+  │ Read Uncommitted     │ Possible    │ Possible            │ Possible     │
+  │ Read Committed (PG)  │ No          │ Possible            │ Possible     │
+  │ Repeatable Read      │ No          │ No                  │ Possible     │
+  │ Serializable         │ No          │ No                  │ No           │
+  └──────────────────────┴─────────────┴─────────────────────┴──────────────┘
+
+DEFINITIONS:
+  Dirty read:          reading another transaction's UNCOMMITTED data.
+                       That transaction might still roll back. You read garbage.
+
+  Non-repeatable read: You read a row, then read it again in the same txn.
+                       Another transaction committed a change between your reads.
+                       Same row, different values. Can't repeat a read reliably.
+
+  Phantom read:        You run a query returning 5 rows, run it again.
+                       New rows appeared (another txn inserted and committed).
+                       The result set changed. Your aggregate (COUNT) is wrong.
+
+POSTGRES DEFAULT: Read Committed.
+  Most applications are fine with this. For financial systems where you need
+  consistent reads throughout a transaction, use Repeatable Read.
+  Serializable is rarely used — big performance cost.
+
+THE CRITICAL INTERVIEW TRAP — Read Committed does NOT prevent lost updates:
+  T1: SELECT inventory → 1
+  T2: SELECT inventory → 1 (T1 hasn't committed yet, but in Read Committed
+      T2 reads the COMMITTED value, which is still 1)
+  T1: UPDATE SET inventory = inventory - 1 → 0. COMMIT.
+  T2: UPDATE SET inventory = inventory - 1 → -1. COMMIT. (reads committed value 0,
+      subtracts 1 = -1). BOTH SUCCEED. inventory = -1.
+
+  Postgres does NOT prevent this. YOU must prevent it:
+    Option 1: SELECT ... FOR UPDATE (row-level lock, serializes access)
+    Option 2: Atomic conditional UPDATE:
+              UPDATE items SET inventory = inventory - 1
+              WHERE id = 1 AND inventory > 0;
+              → check rows_affected = 1 to confirm success
+    Option 3: Optimistic locking (version column, retry on conflict)
+    Option 4: Use Serializable isolation level
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: DURABILITY — COMMITTED = PERMANENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE FAILURE MODE IT SOLVES:
+  Payment transaction commits successfully. Server crashes 50ms later.
+  On restart, that payment is gone. The commit was a lie.
+
+THE GUARANTEE:
+  Once a transaction commits, it is permanent. Power loss, kernel panic, hardware
+  failure — none of these can lose a committed transaction.
+
+THE MECHANISM — fsync():
+  The OS maintains write buffers in RAM. Writing to disk = writing to OS buffer,
+  not necessarily to physical disk. This is fast but volatile.
+
+  When Postgres commits a transaction, it calls fsync() — a system call that
+  forces the OS to flush ALL pending writes from RAM buffers to physical disk.
+  fsync() does not return until the OS confirms the data is on persistent storage.
+
+  Only after fsync() completes does Postgres tell the client "committed."
+
+  This is why DB writes have latency even for tiny records:
+  The commit latency = time for fsync() = ~1-10ms (one physical disk write).
+
+WHAT HAPPENS WITHOUT fsync (dangerous):
+  Some cloud instances or misconfigured setups disable fsync for performance.
+  Writes are faster, but on crash: the OS buffer is in RAM → gone.
+  The committed transactions since the last fsync are permanently lost.
+  This is a data integrity disaster. Never disable fsync in production.
+
+CHECKPOINT:
+  Postgres periodically writes a "checkpoint" — forces all dirty data pages to
+  disk and writes a checkpoint record to WAL. On recovery, Postgres only needs
+  to replay WAL from the last checkpoint. Without checkpoints, recovery would
+  mean replaying the entire WAL from the beginning (slow).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: INDEXING — HOW DATABASES FIND DATA FAST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WITHOUT AN INDEX:
+  SELECT * FROM tweets WHERE user_id = 42;
+  Postgres reads EVERY row in the table and checks if user_id = 42. O(n).
+  At 100M rows: 100M × 100 bytes = 10GB read from disk. Seconds.
+
+WITH AN INDEX:
+  B-tree on user_id. Postgres navigates the tree to find user_id = 42 in O(log n).
+  At 100M rows: log2(100M) ≈ 27 comparisons. Microseconds.
+
+HOW B-TREE WORKS:
+  Balanced sorted tree. Every node has a key range and pointers to children.
+  Root splits keys into ranges: < 1M | 1M-2M | > 2M.
+  Each level narrows the search until leaf nodes hold the actual row pointers (TIDs).
+
+  B-tree supports:
+    = (equality)       → directly locate the key
+    <, >, BETWEEN      → range scans (sorted order makes this natural)
+    ORDER BY           → already sorted, no sort step needed
+    LIKE 'prefix%'     → can use index for prefix (but not '%middle%')
+
+  B-tree does NOT support:
+    LIKE '%suffix%' or '%middle%'  → leading wildcard kills the index
+    Full-text search               → use GIN index or Elasticsearch instead
+    Geospatial queries             → use GiST index or Redis GEO
+
+COMPOSITE INDEX — LEFT-PREFIX RULE:
+  Index on (user_id, status, created_at):
+
+    Can use:
+      WHERE user_id = 42                           ✓ uses user_id
+      WHERE user_id = 42 AND status = 'active'     ✓ uses user_id + status
+      WHERE user_id = 42 AND status = 'active'
+            AND created_at > '2024-01-01'          ✓ uses all three
+
+    Cannot use:
+      WHERE status = 'active'                      ✗ skips user_id (leftmost)
+      WHERE created_at > '2024-01-01'              ✗ skips both
+
+    Partial use (tricky case):
+      WHERE user_id = 42 AND created_at > '2024-01-01'
+      → Uses index for user_id lookup, then filters created_at in memory.
+      → Does NOT use created_at column from the index (status was skipped).
+      → Much slower than full index use, but faster than a full table scan.
+
+  WHY LEFT-PREFIX:
+    The index is sorted by user_id first, then by status within each user_id,
+    then by created_at within each status. Skipping user_id means you'd need
+    to scan all status values across all users — the sort order doesn't help.
+
+ORDER BY WITH INDEX (bonus optimization):
+  Query: SELECT * FROM tweets WHERE user_id = 42 ORDER BY created_at DESC
+  Index: (user_id, created_at)
+  → Index locates all rows for user_id = 42 AND returns them in created_at order.
+  → Sort step eliminated entirely. No filesort in EXPLAIN output.
+  → At millions of rows, this is a huge win.
+
+COVERING INDEX:
+  An index that contains ALL columns needed by a query. Postgres can answer
+  the query from the index alone, never touching the actual table (heap).
+
+  Example:
+    Query: SELECT user_id, created_at FROM tweets WHERE user_id = 42
+    Index: (user_id, created_at) — index-only scan. Never hits the heap.
+    Much faster than a regular index scan (one I/O instead of two).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 7: PARTITIONING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Partitioning splits one logical table into multiple physical storage units.
+Each partition stores a subset of rows. Queries can skip irrelevant partitions
+(partition pruning) — scanning only the partition(s) with relevant data.
+
+RANGE PARTITIONING:
+  Split by value range. Common for time-series data:
+    tweets_2023: rows where created_at IN 2023
+    tweets_2024: rows WHERE created_at IN 2024
+    tweets_2025: rows WHERE created_at IN 2025
+
+  Query: SELECT * FROM tweets WHERE created_at > '2025-01-01'
+  → Postgres prunes tweets_2023 and tweets_2024. Only scans tweets_2025.
+  → As table grows, old partitions are untouched and can even be archived.
+
+  RISK — Hotspot:
+    If 90% of reads and writes are for "today's data," all load goes to one
+    partition. That partition becomes the bottleneck. All others sit idle.
+    Range partitioning on time creates temporal hotspots by design.
+
+HASH PARTITIONING:
+  Split by hash of a column:  partition = hash(user_id) % N
+  Distributes rows evenly across N partitions regardless of time or value.
+
+  User 42 → hash(42) % 4 = 2 → goes to partition_2. Always.
+  Reads for user 42 always go to partition_2. No hotspot by value.
+
+  TRADE-OFF:
+    No range queries across partitions (which partition has tweets from Jan-Mar?
+    Answer: all of them. Must scan all N partitions).
+    Hash partitioning sacrifices range scan efficiency for even distribution.
+
+CHOOSE:
+  Time-series, range queries → range partition on time column.
+  User data, even distribution needed → hash partition on user_id.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 8: WHEN POSTGRES BREAKS — THE CEILING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Postgres is excellent. Until it isn't. Knowing the ceiling lets you plan early.
+
+CAPACITY CEILINGS:
+  Data size:   Postgres handles single-node up to ~50-100 TB comfortably.
+               Beyond that: partitioning + read replicas, or move to Cassandra.
+  Write rate:  ~5k-10k writes/sec sustained on a single node before latency climbs.
+               At 50k+/sec: Postgres will be overwhelmed. Kafka + Cassandra.
+  Connections: Postgres spawns a new OS process per connection. Each ~5-10MB RAM.
+               At 500+ connections: RAM pressure. Use PgBouncer (connection pooler).
+               PgBouncer pools 10k client connections into 50 actual Postgres ones.
+
+OPERATIONAL CEILINGS:
+  VACUUM/Bloat:
+    MVCC keeps old row versions for concurrent readers. VACUUM cleans them.
+    At high write rates (millions of rows updated/deleted per hour), VACUUM
+    may not keep up → dead tuples accumulate → table size bloat → seq scans
+    take longer as they scan dead tuples → everything degrades together.
+    Observable: table size growing despite constant row count, pg_stat_user_tables
+    showing high n_dead_tup, autovacuum running constantly.
+
+  Schema migrations at scale:
+    ALTER TABLE ADD COLUMN NOT NULL on a 200M row table = table rewrite.
+    Postgres locks the table during the rewrite. Minutes of downtime.
+    Fix: (1) add nullable column first, (2) backfill values, (3) add NOT NULL.
+    Or: use pg_repack to rewrite without locks. Or: plan migrations in releases.
+
+  Cross-shard joins:
+    Once you split data across machines (sharding), JOINs across shards require
+    fetching data from multiple machines and joining in the application layer.
+    This is painful, slow, and breaks the relational model.
+    Avoid sharding as long as possible. Vertical scaling + read replicas first.
+
+OBSERVABLE SIGNALS POSTGRES IS AT ITS LIMIT:
+  → p99 query latency climbing despite correct indexes in place.
+  → Buffer hit rate < 95%: working set no longer fits in shared_buffers (RAM).
+     Data must be read from disk on every access.
+  → VACUUM running continuously and still losing ground to dead tuple growth.
+  → Replica lag consistently > 1 second (primary generating WAL faster than
+     replica can apply it → replica falling further behind).
+  → Connection wait times appearing: application waiting to acquire a DB connection.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: Postgres confirms a transaction committed. Server crashes immediately.
+    What guarantees data survives?
+A: WAL + fsync. Before commit, all log entries were written to WAL. Before
+   returning "committed" to the client, fsync() flushed the WAL to physical disk.
+   On restart, Postgres replays WAL entries from last checkpoint → data recovered.
+
+Q2: What is MVCC and why does Postgres use it instead of read locks?
+A: Multi-Version Concurrency Control. Postgres keeps multiple versions of each
+   row stamped with transaction IDs. Each transaction sees a snapshot of rows
+   committed before it started. Old versions persist until VACUUM removes them.
+   Benefit: readers never block writers, writers never block readers.
+   Without MVCC: every read acquires a shared lock, blocking concurrent writes.
+   At any meaningful scale, that serializes all concurrent access.
+
+Q3: Composite index on (user_id, status, created_at).
+    Does WHERE user_id=42 AND created_at > '2024' use the full index?
+A: No. It uses the index for user_id, then filters created_at in memory.
+   created_at is NOT used from the index because status was skipped.
+   The index is sorted by status within each user_id. Skipping status means
+   there's no ordering on created_at to exploit.
+
+Q4: What problem does VACUUM solve and when does it fail?
+A: VACUUM reclaims storage from dead tuples — old row versions created by MVCC.
+   Without VACUUM, dead tuples accumulate, table sizes bloat, scans slow down.
+   VACUUM fails (falls behind) at very high write/update/delete rates where
+   dead tuples are created faster than autovacuum can clean them.
+   Observable: n_dead_tup in pg_stat_user_tables growing without bound.
+
+Q5: Two concurrent transactions both read inventory=1 and try to decrement.
+    Under Read Committed, do both succeed?
+A: YES. Both can succeed, resulting in inventory = -1.
+   Read Committed prevents dirty reads but NOT lost updates.
+   Prevention: SELECT FOR UPDATE (row lock), or conditional UPDATE with
+   WHERE inventory > 0 and checking rows_affected.
+
+
+================================================================================
+END OF MODULE SD-03a — SQL & ACID DEEP
+================================================================================

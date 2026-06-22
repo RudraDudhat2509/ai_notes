@@ -1,0 +1,415 @@
+================================================================================
+MODULE — SD-03b: NoSQL SELECTION  (System Design Phase, Session 3)
+AI/ML Study Notes — Rudra Dudhat
+Date: 2026-06-22
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 1: WHY NoSQL EXISTS — WHAT SQL CAN'T DO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SQL is built on a fundamental assumption: data fits on one machine.
+All ACID guarantees — WAL, fsync, MVCC — are designed for a single-node system.
+The relational model's JOINs require all the data to be reachable from one place.
+
+When your data outgrows one machine, SQL creates problems:
+  → Sharding Postgres is painful: cross-shard JOINs break the relational model.
+  → Write throughput ceiling: ~5-10k writes/sec on one node.
+  → Schema changes at scale: ALTER TABLE on 500M rows = minutes of downtime.
+
+Each NoSQL database was designed to solve one of these specific problems:
+
+  Cassandra    → massive distributed writes, no single point of failure
+  DynamoDB     → same, but managed/serverless (pay AWS instead of ops team)
+  MongoDB      → schema flexibility when data structure is unknown or evolving
+  Redis        → microsecond reads from RAM (covered in SD-03c)
+  Elasticsearch → full-text search on large datasets (covered in SD-05)
+
+NoSQL is NOT "Postgres but faster" in general. Each is specialized.
+Using the wrong one for your access pattern makes things worse, not better.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 2: CAP THEOREM — THE FUNDAMENTAL TRADE-OFF
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In a distributed system, you can have at most 2 of 3:
+  C — Consistency:   every read returns the most recent write (or an error).
+  A — Availability:  every request gets a response (never returns an error).
+  P — Partition Tolerance: the system keeps working even if network splits occur.
+
+Network partitions (P) WILL happen in any real distributed system. You can't
+avoid them. So the real choice is: Consistency vs Availability when a partition
+occurs. You pick CP or AP.
+
+  CP system (prefers consistency):
+    When a network partition occurs, the system refuses to serve requests it
+    can't guarantee are consistent. Returns errors. Never serves stale data.
+    Examples: Zookeeper, HBase, Postgres (with sync replication).
+    Use for: financial systems, inventory, anything where stale data causes harm.
+
+  AP system (prefers availability):
+    When a partition occurs, the system keeps serving requests with potentially
+    stale data. Never returns an error. May return outdated values.
+    Examples: Cassandra, DynamoDB, CouchDB.
+    Use for: social feeds, analytics, systems where slightly stale is acceptable.
+
+BASE (what AP systems provide instead of ACID):
+  Basically Available  → the system will respond even during failures
+  Soft state           → state may change without input (replication catching up)
+  Eventually consistent → given no new writes, all replicas will converge
+
+"Eventual consistency" does NOT mean "eventually correct." It means: right now
+different replicas may disagree, but within seconds they will all converge to
+the same state. For most reads (social feeds, search results, recommendations),
+this is completely acceptable.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 3: CASSANDRA — BUILT FOR MASSIVE DISTRIBUTED WRITES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  A distributed wide-column store. No master node. Any node can accept any write.
+  Designed at Facebook for the Inbox feature. Now powers Netflix, Discord, Twitter.
+
+ARCHITECTURE — THE RING:
+  All nodes sit on a consistent hashing ring (see SD-06 for this in detail).
+  When a write arrives at any node, that node acts as coordinator.
+  It hashes the partition key → finds 3 nodes that own that data range → sends
+  the write to all 3. At least N must acknowledge before returning success
+  (where N is the consistency level you configured).
+
+THE WRITE PATH (why Cassandra writes are so fast):
+  Step 1: Write to Commit Log (sequential, append-only → fast disk write).
+  Step 2: Write to Memtable (in-memory sorted structure).
+  Step 3: Return success to client.
+  Background: when Memtable fills up → flush to SSTable on disk (immutable file).
+
+  Cassandra NEVER overwrites data in place. Every write is an append.
+  Sequential I/O is far faster than random I/O (see SD-01).
+  This is why Cassandra can sustain millions of writes/sec.
+
+  Old values are not immediately deleted — they're just overridden in the
+  next SSTable. Compaction periodically merges SSTables and discards old versions.
+
+DATA MODELING RULE — QUERY-DRIVEN SCHEMA:
+  SQL: normalize data, JOIN at query time.
+  Cassandra: design tables around your specific queries. Denormalize if needed.
+
+  Your query: "get all messages from user 42, newest first."
+  Your table must have:
+    Partition key: user_id       → routes to correct nodes
+    Clustering key: created_at DESC  → sorts within a partition
+
+  If you want to also query "all messages to user 42":
+    Create a SECOND table: partition by recipient_id, cluster by created_at.
+    Cassandra has no JOINs. You must pre-compute every query path as a table.
+    Writes go to both tables. Reads from the table that matches the query.
+
+  This is a fundamental mindset shift from SQL. The query determines the schema.
+
+CONSISTENCY DIAL:
+  Cassandra's strongest feature: you configure the consistency level per query.
+  ONE:    fastest. Only 1 replica needs to acknowledge. Risk: reads may be stale.
+  QUORUM: safe. Majority of replicas must agree. Slower. No stale reads.
+  ALL:    slowest. All replicas must agree. Unavailable if any replica is down.
+  LOCAL_QUORUM: quorum within the local datacenter only. Good for multi-region.
+
+  Write at ONE + read at ONE = eventual consistency (fastest, may see stale data).
+  Write at QUORUM + read at QUORUM = strong consistency (still distributed).
+  Write at ALL + read at ONE = strong consistency (slow writes).
+
+TOMBSTONES (dangerous behavior with deletes):
+  Cassandra never deletes in place. A "delete" writes a tombstone marker.
+  Tombstones say "this data is deleted as of time T." During reads, Cassandra
+  ignores values older than tombstones. During compaction, tombstones + old
+  values are garbage collected after gc_grace_seconds (default: 10 days).
+  Problem: if you delete many rows and then read them, Cassandra still scans
+  tombstones → slow reads, high garbage → "tombstone avalanche."
+  Fix: avoid high-cardinality deletes. Use TTL instead of explicit deletes.
+
+WHEN TO PICK CASSANDRA:
+  ✓ Massive sustained write volume (100k+/sec)
+  ✓ Time-series data (IoT, metrics, logs, activity feeds)
+  ✓ Known partition key (you always query by sensor_id or user_id)
+  ✓ Multi-region active-active (write to closest region, replicate everywhere)
+  ✓ You want control over ops (not serverless)
+  ✓ Data can tolerate eventual consistency
+
+  ✗ Need complex queries / JOINs across entities
+  ✗ Need strong ACID guarantees
+  ✗ Schema is unknown / evolving rapidly
+  ✗ Running on AWS and don't want to manage clusters → use DynamoDB instead
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 4: DynamoDB — MANAGED CASSANDRA FOR AWS USERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  AWS's fully managed NoSQL database. Internally similar architecture to Cassandra.
+  You pay per read/write unit. AWS handles provisioning, scaling, ops, backups.
+
+KEY DIFFERENCE FROM CASSANDRA: operational overhead.
+  Cassandra: you manage cluster nodes, replication factor, compaction, backups.
+  DynamoDB: AWS manages all of it. You just configure capacity and pay.
+
+DATA MODEL:
+  Tables. Every item has a primary key.
+  Primary key = partition key (mandatory) + optional sort key.
+
+  With sort key: can range-query within a partition.
+    Partition key: user_id
+    Sort key: timestamp
+    → "Get all events for user 42 between Jan and Mar" = efficient range scan.
+
+  Without sort key: point lookups only (exact partition key match).
+
+GLOBAL SECONDARY INDEX (GSI):
+  What if you need to query by a different attribute that's not the partition key?
+  Example: your table is keyed by user_id, but you need "all orders with status=PAID."
+
+  GSI creates a parallel index with a different partition key (status in this case).
+  Writes are replicated to the GSI automatically.
+  GSI queries are eventually consistent by default (can request strongly consistent).
+  Cost: additional write capacity consumed for every GSI maintained.
+
+  You can have multiple GSIs per table. Single-table design pattern uses GSIs
+  heavily to support many different query patterns on one DynamoDB table.
+
+TTL (Time To Live):
+  Set a TTL attribute on any item (a Unix timestamp).
+  DynamoDB automatically deletes the item after that timestamp.
+  Costs nothing extra. Deletes happen within 48 hours of expiry (eventually).
+  Use for: sessions, rate limit counters, temporary auth tokens, cache entries.
+
+STREAMS:
+  Every write (INSERT, UPDATE, DELETE) is published to DynamoDB Streams.
+  Lambda functions or Kinesis consumers can subscribe.
+  Each stream record contains the before + after image of the item.
+  Use for: event-driven workflows, maintaining search indexes, audit logs,
+           cross-region replication triggers.
+
+CAPACITY MODES:
+  Provisioned: you pre-configure read/write capacity units. Cheaper if traffic
+               is predictable. Under/over-provisioning costs you.
+  On-Demand:   AWS auto-scales instantly. Pay per request. More expensive per unit
+               but no capacity planning. Best for spiky/unpredictable traffic.
+
+WHEN TO PICK DynamoDB:
+  ✓ Already using AWS ecosystem
+  ✓ Want zero ops burden (serverless)
+  ✓ Traffic is spiky or unpredictable (on-demand mode absorbs bursts)
+  ✓ Moderate scale (< 100k writes/sec — beyond that Cassandra is more cost effective)
+  ✓ Need TTL or Streams built in
+  ✓ Don't want to manage a Cassandra cluster
+
+  ✗ Not on AWS (you'd be paying AWS to use it + cross-cloud egress fees)
+  ✗ Extreme write volume where Cassandra self-hosted is more cost effective
+  ✗ Need complex aggregations (DynamoDB is bad at aggregations → use Redshift)
+
+CASSANDRA vs DynamoDB — THE KEY DIFFERENTIATOR:
+  Same architecture, different operational model.
+  Very high volume + self-hosted + want control → Cassandra.
+  Moderate volume + on AWS + want zero ops → DynamoDB.
+  The decision is about ops burden and cost, not capability.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 5: MongoDB — BUILT FOR FLEXIBLE, HIERARCHICAL DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT IT IS:
+  A document database. Stores data as BSON (Binary JSON) documents.
+  Collections = tables. Documents = rows. But documents have no fixed schema.
+
+BSON (Binary JSON):
+  MongoDB stores data as BSON — a binary encoding of JSON that adds types
+  like ObjectId, Date, Binary. It's what MongoDB actually stores on disk.
+  When you read a document, it's decoded back to JSON for your application.
+  Why binary: smaller size, faster to parse than text JSON.
+
+SCHEMA FLEXIBILITY:
+  Two documents in the same collection can have completely different fields.
+  Collection "products":
+    { "_id": 1, "name": "Shirt", "size": "M", "color": "blue" }
+    { "_id": 2, "name": "Laptop", "brand": "Apple", "ram_gb": 16, "storage_tb": 1 }
+
+  Different product categories need different attributes. In Postgres, you'd
+  either have many nullable columns or a separate table per category.
+  In MongoDB: each document just has the fields relevant to it.
+  Perfect for early-stage products where the schema is still evolving.
+
+EMBEDDING vs REFERENCING:
+  When related data exists, should you embed it inside the parent document
+  or reference it with an ID (like a FK)?
+
+  EMBED WHEN:
+    → Data is always read together (user + user settings — never just settings)
+    → Data is "owned by" the parent (a blog post has exactly one author bio)
+    → Sub-document doesn't grow unboundedly over time
+    → No other documents need to reference the same sub-document
+    Benefit: single read to get all data. No JOIN equivalent needed.
+
+    Example: user document with embedded address
+    { "_id": 1, "name": "Rudra",
+      "address": { "city": "Mumbai", "state": "MH", "pin": "400001" } }
+
+  REFERENCE WHEN:
+    → Data is shared across many documents (all tweets by user 42 reference user 42)
+    → Sub-document can grow large without bound (comments on a viral post)
+    → Data is updated independently of the parent
+    Benefit: no duplication, easier updates, avoids document size limit (16MB).
+
+    Example: tweet document references user by ID
+    { "_id": 901, "user_id": ObjectId("abc"), "content": "..." }
+
+$LOOKUP (MongoDB's JOIN):
+  If you use referencing, querying across collections requires $lookup — MongoDB's
+  aggregation stage that joins two collections at query time.
+
+  db.tweets.aggregate([
+    { $lookup: {
+        from: "users",
+        localField: "user_id",
+        foreignField: "_id",
+        as: "author"
+    }}
+  ])
+
+  This is expensive compared to embedding. Avoid $lookup for hot query paths.
+  Prefer embedding for data that's always read together.
+
+AGGREGATION PIPELINE:
+  MongoDB's equivalent of SQL GROUP BY + complex analytics.
+  A sequence of stages that transform documents:
+    $match    → filter (like WHERE)
+    $group    → group by + aggregation (COUNT, SUM, AVG)
+    $sort     → order results
+    $project  → select/rename fields (like SELECT)
+    $unwind   → flatten arrays
+    $lookup   → join another collection
+    $limit    → limit results
+
+  Example: top 10 users by tweet count:
+  db.tweets.aggregate([
+    { $group: { _id: "$user_id", tweet_count: { $sum: 1 } } },
+    { $sort: { tweet_count: -1 } },
+    { $limit: 10 }
+  ])
+
+INDEXES IN MONGODB:
+  MongoDB supports B-tree indexes on any field, including nested document fields.
+  Create index: db.tweets.createIndex({ user_id: 1, created_at: -1 })
+  Compound indexes follow the same left-prefix rule as Postgres composite indexes.
+  Text indexes: MongoDB has built-in text search (simpler than Elasticsearch
+  but slower and less powerful — fine for basic search needs).
+
+WHEN TO PICK MongoDB:
+  ✓ Schema is unknown, evolving, or varies per entity (product catalog)
+  ✓ Data is naturally hierarchical or nested (blog posts with embedded comments)
+  ✓ Need rich ad-hoc queries and aggregation
+  ✓ Rapid prototyping where schema will change frequently
+  ✓ Document-oriented data that maps poorly to tables (JSON API responses)
+
+  ✗ Need ACID across multiple documents (MongoDB has multi-document transactions
+     since v4.0, but they're slower and more complex than Postgres)
+  ✗ Data is highly relational with many JOINs
+  ✗ Write volume is massive (MongoDB is not as write-optimized as Cassandra)
+  ✗ Need consistent time-series or high-volume append-only writes
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONCEPT 6: THE DECISION FRAMEWORK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+USE THIS TO CHOOSE IN INTERVIEWS:
+
+  ┌─────────────────────────────────────────────────────┬──────────────────┐
+  │ Requirement                                         │ Choose           │
+  ├─────────────────────────────────────────────────────┼──────────────────┤
+  │ ACID, JOINs, structured relational data             │ PostgreSQL       │
+  │ Massive write volume (100k+/s), time-series,        │                  │
+  │   multi-region, self-hosted                         │ Cassandra        │
+  │ AWS-native, zero ops, moderate scale,               │                  │
+  │   spiky traffic, need TTL/Streams                   │ DynamoDB         │
+  │ Flexible/evolving schema, hierarchical,             │                  │
+  │   rich queries, document model                      │ MongoDB          │
+  │ Microsecond reads, caching, leaderboards,           │                  │
+  │   counters, ephemeral data                          │ Redis            │
+  │ Full-text search, ranked results                    │ Elasticsearch    │
+  └─────────────────────────────────────────────────────┴──────────────────┘
+
+COMMON CONFUSION POINTS:
+
+  Cassandra vs DynamoDB:
+    Both are distributed KV with partition keys. The differentiator is ops burden.
+    Very high volume + self-hosted → Cassandra.
+    Managed + AWS + moderate scale → DynamoDB.
+
+  MongoDB vs Postgres:
+    Use Postgres when you know the schema and need relational guarantees.
+    Use MongoDB when the schema is still evolving or data is deeply hierarchical.
+    Do NOT use MongoDB just because "NoSQL is faster" — it's often not for
+    structured queries, and you lose the relational model for no reason.
+
+  Redis vs the others:
+    Redis is NOT a replacement for any of the above.
+    Redis is a speed layer IN FRONT of your primary DB.
+    Primary storage: Postgres/Cassandra/MongoDB.
+    Cache layer: Redis.
+    Using Redis as primary storage is risky (data lives in RAM; loss on crash
+    without persistence configured).
+
+17 QUIZ SCENARIOS PRACTICED:
+  Key patterns drilled:
+  - UPI transaction history → Cassandra (massive volume, time-series, known key)
+  - User auth sessions → Redis (TTL, microsecond, ephemeral)
+  - Product catalog (e-commerce) → MongoDB (variable schema per category)
+  - Bank account balance → Postgres (ACID, strong consistency, relational)
+  - IoT sensor readings → Cassandra (massive write rate, time-series)
+  - Notification preferences → DynamoDB (AWS, moderate, zero ops)
+  - Job queue → Redis (Lists with LPUSH/RPOP) or SQS
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GATE QUESTIONS — VERIFY UNDERSTANDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Q1: 50,000 IoT sensors write a reading every second (50k writes/sec). You need
+    "all readings from sensor X between time T1 and T2". Which DB?
+A: Cassandra. 50k writes/sec is above Postgres ceiling. Append-only time-series
+   maps perfectly to Cassandra. Partition key = sensor_id, clustering key = timestamp.
+   Query is by known partition key (sensor_id) + time range = efficient.
+
+Q2: You're on AWS, have unpredictable traffic spikes, and need zero ops burden.
+    Cassandra or DynamoDB?
+A: DynamoDB. On-demand capacity mode handles spikes without provisioning.
+   Zero ops = AWS manages everything. Cassandra requires cluster management.
+   If the volume were 500k+/sec, cost might tip toward Cassandra self-hosted.
+
+Q3: Why does Cassandra require you to design tables around queries?
+A: Cassandra has no JOINs and no WHERE clause on non-partition-key columns without
+   a full table scan (ALLOW FILTERING — dangerous). Data is physically partitioned
+   and sorted by the partition and clustering keys you defined. To query efficiently,
+   the query must match the table's key structure. The table layout IS the query plan.
+
+Q4: When would you embed a sub-document in MongoDB vs reference it?
+A: Embed when: data is always read together, document is owned by parent, doesn't
+   grow unboundedly, not referenced by others. Single read, no $lookup.
+   Reference when: data is shared by many documents, sub-document grows large
+   over time, updated independently. Avoids duplication but requires $lookup.
+
+Q5: What is eventual consistency in Cassandra and when is it a problem?
+A: With consistency level ONE: after a write succeeds on 1 replica, other replicas
+   update asynchronously. A read from a different replica within ms of the write
+   might return the old value. This is "eventual" — replicas converge within seconds.
+   Problem when: a user writes their profile update and immediately reads it —
+   if routed to a stale replica they see old data. Fix: use QUORUM consistency
+   for this path, or always read-your-writes from the same replica.
+
+
+================================================================================
+END OF MODULE SD-03b — NoSQL SELECTION
+================================================================================
