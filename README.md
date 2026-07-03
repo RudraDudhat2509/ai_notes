@@ -1,4 +1,4 @@
-# AI/ML Teaching Context — Rudra Dudhat
+# AI/ML Teaching Context | Rudra Dudhat
 
 > Load this file at the start of every session. This is the single source of truth for how to teach Rudra. Do not skip it.
 
