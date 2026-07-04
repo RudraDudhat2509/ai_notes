@@ -139,10 +139,16 @@ Scale AI (red teaming), Palantir (security isolation), and eval-focused teams ma
 
 ---
 
-## THE 16-WEEK ROADMAP (the source of truth)
+## THE ROADMAP (the source of truth)
+
+**⚠️ SUPERSEDED 2026-07-04 → the active plan is [`CURRICULUM_DEC2026.md`](CURRICULUM_DEC2026.md).**
+Load that file at session start alongside this README. Spine: evals + LLM observability
+(Hamel/Shreya methodology), security as differentiator layer. 21 weeks, Jul 7 → Nov 29.
+Proof-of-work gate: **Oct 11**. The old 16-week roadmap below is kept for history only —
+its Phase 1 progress (Wk 1–3 done) and knowledge calibration table remain valid.
 
 ```
-PHASE 1 — PYTHON + CS BEDROCK          (Weeks 1–4)   ← CURRENT
+PHASE 1 — PYTHON + CS BEDROCK          (Weeks 1–4)   ← superseded mid-phase
 PHASE 2 — BACKEND SYSTEMS DEPTH        (Weeks 5–8)
 PHASE 3 — AI ENGINEERING (rebuilt)     (Weeks 9–12)
 PHASE 4 — INTEGRATION + INTERVIEW REPS (Weeks 13–16)
