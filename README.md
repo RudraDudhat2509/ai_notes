@@ -141,8 +141,11 @@ Scale AI (red teaming), Palantir (security isolation), and eval-focused teams ma
 
 ## THE ROADMAP (the source of truth)
 
-**⚠️ SUPERSEDED 2026-07-04 → the active plan is [`CURRICULUM_DEC2026.md`](CURRICULUM_DEC2026.md).**
-Load that file at session start alongside this README. Spine: evals + LLM observability
+**⚠️ SUPERSEDED 2026-07-04 → the active plan lives in its own repo:
+[december-plan](https://github.com/RudraDudhatAltagic/december-plan) (local:
+`altagic/december-plan/` — CURRICULUM.md + RETENTION_DECK.md + PARKING_LOT.md).**
+Load CURRICULUM.md at session start alongside this README; open every session with the
+retention deck's due cards. Spine: evals + LLM observability
 (Hamel/Shreya methodology), security as differentiator layer. 21 weeks, Jul 7 → Nov 29.
 Proof-of-work gate: **Oct 11**. The old 16-week roadmap below is kept for history only —
 its Phase 1 progress (Wk 1–3 done) and knowledge calibration table remain valid.

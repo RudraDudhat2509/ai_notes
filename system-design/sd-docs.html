@@ -1,0 +1,1475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>System Design Docs — Rudra Dudhat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #09090b;
+  --sidebar-bg: #0f0f11;
+  --border: #27272a;
+  --text: #fafafa;
+  --muted: #71717a;
+  --muted2: #52525b;
+  --accent: #e9a82a;
+  --accent-dim: rgba(233,168,42,0.08);
+  --accent-border: rgba(233,168,42,0.2);
+  --code-bg: #18181b;
+  --hover: rgba(255,255,255,0.03);
+  --blue: #60a5fa;
+  --blue-dim: rgba(96,165,250,0.06);
+  --orange: #fb923c;
+  --orange-dim: rgba(251,146,60,0.06);
+  --green: #4ade80;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: 'DM Sans', system-ui, sans-serif; display: flex; }
+
+/* ── SIDEBAR ── */
+.sidebar {
+  width: 268px; flex-shrink: 0; background: var(--sidebar-bg);
+  border-right: 1px solid var(--border); display: flex; flex-direction: column;
+  height: 100vh; overflow: hidden;
+}
+.sidebar-brand {
+  padding: 18px 20px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+}
+.brand-icon {
+  width: 30px; height: 30px; background: var(--accent); border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: #09090b; letter-spacing: 0.02em;
+}
+.brand-name { font-size: 14px; font-weight: 600; }
+.brand-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.sidebar-scroll { flex: 1; overflow-y: auto; padding: 8px 0 24px; }
+.sidebar-scroll::-webkit-scrollbar { width: 4px; }
+.sidebar-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.nav-group { margin-bottom: 4px; }
+.nav-group-title {
+  padding: 12px 20px 6px; font-size: 10.5px; font-weight: 600;
+  color: var(--muted2); text-transform: uppercase; letter-spacing: 0.09em;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 9px; padding: 7px 20px;
+  font-size: 13.5px; color: var(--muted); cursor: pointer;
+  border-left: 2px solid transparent; transition: all 0.12s;
+  user-select: none; line-height: 1.4;
+}
+.nav-item:hover { color: var(--text); background: var(--hover); }
+.nav-item.active { color: var(--text); border-left-color: var(--accent); background: var(--accent-dim); }
+.nav-badge {
+  font-size: 9.5px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+  background: rgba(255,255,255,0.05); color: var(--muted2); letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.nav-item.active .nav-badge { background: var(--accent-dim); color: var(--accent); }
+
+/* ── MAIN ── */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.topbar {
+  height: 55px; border-bottom: 1px solid var(--border); display: flex;
+  align-items: center; padding: 0 40px; gap: 16px; flex-shrink: 0;
+}
+.back-btn {
+  font-size: 13px; color: var(--muted); text-decoration: none;
+  display: flex; align-items: center; gap: 5px; transition: color 0.12s;
+}
+.back-btn:hover { color: var(--text); }
+.topbar-sep { color: var(--border); font-size: 18px; }
+#breadcrumb { font-size: 13px; color: var(--muted); }
+#breadcrumb span { color: var(--text); }
+.search-btn {
+  margin-left: auto; display: flex; align-items: center; gap: 8px;
+  padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border);
+  background: transparent; color: var(--muted); font-size: 13px;
+  font-family: inherit; cursor: pointer; transition: border-color 0.12s;
+}
+.search-btn:hover { border-color: #3f3f46; color: var(--text); }
+.search-btn kbd {
+  font-size: 11px; padding: 1px 5px; border-radius: 4px;
+  background: rgba(255,255,255,0.07); color: var(--muted2); font-family: inherit;
+}
+.content-scroll { flex: 1; overflow-y: auto; padding: 52px 64px 80px; }
+.content-scroll::-webkit-scrollbar { width: 6px; }
+.content-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+
+/* ── DOC PAGES ── */
+.doc-page { display: none; max-width: 740px; margin: 0 auto; }
+.doc-page.active { display: block; }
+.page-eyebrow { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.session-pill {
+  font-size: 11px; font-weight: 600; padding: 4px 12px; border-radius: 999px;
+  background: var(--accent-dim); color: var(--accent); letter-spacing: 0.05em;
+  border: 1px solid var(--accent-border);
+}
+.phase-label { font-size: 12px; color: var(--muted); font-weight: 500; }
+.doc-page h1 { font-size: 30px; font-weight: 600; line-height: 1.2; margin-bottom: 14px; }
+.page-desc {
+  font-size: 16px; color: #a1a1aa; line-height: 1.7; margin-bottom: 40px;
+  padding-bottom: 32px; border-bottom: 1px solid var(--border);
+}
+.doc-page h2 {
+  font-size: 20px; font-weight: 600; margin: 44px 0 16px; padding-top: 4px;
+  scroll-margin-top: 24px;
+}
+.doc-page h3 { font-size: 15.5px; font-weight: 600; margin: 28px 0 12px; }
+.doc-page p { font-size: 15px; line-height: 1.75; color: #d4d4d8; margin-bottom: 16px; }
+.doc-page ul, .doc-page ol { padding-left: 22px; margin-bottom: 18px; }
+.doc-page li { font-size: 15px; line-height: 1.7; color: #d4d4d8; margin-bottom: 6px; }
+.doc-page li strong { color: var(--text); }
+.doc-page strong { color: var(--text); }
+code {
+  font-family: 'DM Mono', monospace; font-size: 13px;
+  background: var(--code-bg); padding: 2px 7px; border-radius: 5px;
+  color: var(--accent); border: 1px solid var(--border);
+}
+pre {
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+  padding: 22px 24px; overflow-x: auto; margin: 22px 0;
+}
+pre code {
+  background: none; border: none; padding: 0; color: #d4d4d8;
+  font-size: 13.5px; line-height: 1.7;
+}
+pre .cm { color: #52525b; } /* comment */
+pre .kw { color: #c084fc; } /* keyword */
+pre .st { color: #86efac; } /* string */
+pre .nm { color: #60a5fa; } /* name */
+pre .nu { color: var(--accent); } /* number */
+
+/* callouts */
+.callout {
+  border-radius: 10px; padding: 16px 20px; margin: 24px 0;
+  border-left: 3px solid; font-size: 14.5px; line-height: 1.7;
+}
+.callout-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; margin-bottom: 8px;
+}
+.callout p { font-size: 14.5px; margin-bottom: 0; color: inherit; }
+.callout.key { background: var(--accent-dim); border-color: var(--accent); color: #d4d4d8; }
+.callout.key .callout-title { color: var(--accent); }
+.callout.gate { background: var(--blue-dim); border-color: var(--blue); color: #d4d4d8; }
+.callout.gate .callout-title { color: var(--blue); }
+.callout.warn { background: var(--orange-dim); border-color: var(--orange); color: #d4d4d8; }
+.callout.warn .callout-title { color: var(--orange); }
+.callout.info { background: rgba(255,255,255,0.02); border-color: var(--muted2); color: #d4d4d8; }
+.callout.info .callout-title { color: var(--muted); }
+
+/* tables */
+.table-wrap { overflow-x: auto; margin: 24px 0; border-radius: 10px; border: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th {
+  text-align: left; padding: 11px 18px; background: var(--sidebar-bg);
+  color: var(--muted); font-size: 11.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.07em;
+  border-bottom: 1px solid var(--border);
+}
+td { padding: 13px 18px; border-bottom: 1px solid var(--border); color: #d4d4d8; vertical-align: top; line-height: 1.55; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--hover); }
+
+/* prev/next */
+.prev-next { display: flex; gap: 16px; margin-top: 72px; padding-top: 36px; border-top: 1px solid var(--border); }
+.pn-card {
+  flex: 1; padding: 16px 20px; border: 1px solid var(--border); border-radius: 10px;
+  cursor: pointer; transition: all 0.15s; text-decoration: none; display: block;
+}
+.pn-card:hover { border-color: var(--accent); background: var(--accent-dim); }
+.pn-dir { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 5px; }
+.pn-title { font-size: 14px; font-weight: 500; color: var(--text); }
+.pn-card.next { text-align: right; }
+hr { border: none; border-top: 1px solid var(--border); margin: 44px 0; }
+
+/* search overlay */
+.search-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(4px); z-index: 100; align-items: flex-start; justify-content: center;
+  padding-top: 15vh;
+}
+.search-overlay.open { display: flex; }
+.search-box {
+  width: 560px; background: #18181b; border: 1px solid #3f3f46;
+  border-radius: 14px; overflow: hidden; box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+}
+#search-input {
+  width: 100%; padding: 18px 22px; background: transparent; border: none;
+  outline: none; font-size: 16px; color: var(--text); font-family: inherit;
+  border-bottom: 1px solid var(--border);
+}
+#search-input::placeholder { color: var(--muted); }
+.search-results { max-height: 380px; overflow-y: auto; }
+.search-result {
+  padding: 14px 22px; cursor: pointer; display: flex; align-items: center;
+  gap: 14px; transition: background 0.1s; border-bottom: 1px solid var(--border);
+}
+.search-result:last-child { border-bottom: none; }
+.search-result:hover { background: var(--hover); }
+.sr-badge {
+  font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px;
+  background: var(--accent-dim); color: var(--accent); flex-shrink: 0;
+}
+.sr-title { font-size: 14px; font-weight: 500; }
+.sr-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.search-empty { padding: 32px 22px; text-align: center; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<nav class="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-icon">SD</div>
+    <div>
+      <div class="brand-name">System Design</div>
+      <div class="brand-sub">45-session curriculum</div>
+    </div>
+  </div>
+  <div class="sidebar-scroll">
+    <div class="nav-group">
+      <div class="nav-group-title">Foundations</div>
+      <div class="nav-item active" data-page="sd-01" onclick="goto('sd-01')"><span class="nav-badge">SD-01</span> Latency Tiers</div>
+      <div class="nav-item" data-page="sd-02" onclick="goto('sd-02')"><span class="nav-badge">SD-02</span> Capacity Estimation</div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">Data Layer</div>
+      <div class="nav-item" data-page="sql-acid" onclick="goto('sql-acid')"><span class="nav-badge">SD-03</span> SQL &amp; ACID Deep</div>
+      <div class="nav-item" data-page="nosql" onclick="goto('nosql')"><span class="nav-badge">SD-03</span> NoSQL Selection</div>
+      <div class="nav-item" data-page="redis" onclick="goto('redis')"><span class="nav-badge">SD-03</span> Redis Deep</div>
+      <div class="nav-item" data-page="schema" onclick="goto('schema')"><span class="nav-badge">SD-03</span> Schema Design LLD</div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">Write Path</div>
+      <div class="nav-item" data-page="kafka" onclick="goto('kafka')"><span class="nav-badge">SD-04</span> Queues &amp; Kafka</div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">Read Path</div>
+      <div class="nav-item" data-page="read-path" onclick="goto('read-path')"><span class="nav-badge">SD-05</span> CDN, Replicas &amp; Search</div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">Scalability</div>
+      <div class="nav-item" data-page="scalability" onclick="goto('scalability')"><span class="nav-badge">SD-06</span> Load Balancing &amp; Hashing</div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">Reliability</div>
+      <div class="nav-item" data-page="reliability" onclick="goto('reliability')"><span class="nav-badge">SD-07</span> Replication &amp; Consensus</div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">Communication</div>
+      <div class="nav-item" data-page="communication" onclick="goto('communication')"><span class="nav-badge">SD-08</span> REST, gRPC &amp; WebSockets</div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">LLD Deep</div>
+      <div class="nav-item" data-page="lld" onclick="goto('lld')"><span class="nav-badge">SD-09</span> OOP, SOLID &amp; Patterns</div>
+    </div>
+  </div>
+</nav>
+
+<!-- MAIN -->
+<div class="main">
+  <header class="topbar">
+    <a href="notes.html" class="back-btn">← Field Notes</a>
+    <span class="topbar-sep">/</span>
+    <div id="breadcrumb">Foundations / <span>Latency Tiers</span></div>
+    <button class="search-btn" onclick="openSearch()">Search docs <kbd>⌘K</kbd></button>
+  </header>
+  <div class="content-scroll" id="scroll">
+
+<!-- ═══════════════════════════════════════════
+     SD-01: LATENCY TIERS
+═══════════════════════════════════════════ -->
+<div id="p-sd-01" class="doc-page active">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-01</span>
+    <span class="phase-label">Foundations</span>
+  </div>
+  <h1>Latency Tiers</h1>
+  <p class="page-desc">The numbers every engineer carries in their head. When an interviewer asks "is this fast enough?", these tiers are the answer. Know them cold — not just what they are, but <em>why they're 1000x apart</em>.</p>
+
+  <h2>The Hierarchy</h2>
+  <p>Every storage medium and network hop has a characteristic access latency. These fall into three orders of magnitude: nanoseconds, microseconds, milliseconds.</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Operation</th><th>Latency</th><th>Relative</th></tr>
+      <tr><td><strong>L1 Cache</strong></td><td>~1 ns</td><td>1×</td></tr>
+      <tr><td>L2 Cache</td><td>~4 ns</td><td>4×</td></tr>
+      <tr><td><strong>RAM</strong></td><td>~100 ns</td><td>100×</td></tr>
+      <tr><td>SSD random read</td><td>~100 µs</td><td>100,000×</td></tr>
+      <tr><td>Network — same datacenter</td><td>~500 µs</td><td>500,000×</td></tr>
+      <tr><td>HDD random read</td><td>~10 ms</td><td>10,000,000×</td></tr>
+      <tr><td>Network — cross-region</td><td>~100 ms</td><td>100,000,000×</td></tr>
+    </table>
+  </div>
+
+  <h2>The 1000× Rule (and the 100× Exception)</h2>
+  <p>Each tier is approximately 1000× slower than the one above it. RAM → SSD is 1000×. SSD → HDD is 100×. Same-DC → Cross-region is ~200×.</p>
+  <div class="callout key">
+    <div class="callout-title">Exception to memorize</div>
+    <p>L1 Cache → RAM is <strong>100×</strong>, not 1000×. L1 is 1ns, RAM is 100ns. Don't say 1000× here — interviewers notice.</p>
+  </div>
+  <p>Why the gaps? Physical reality. L1 cache is silicon on the same die as the CPU. RAM is a separate chip on the motherboard — signals travel farther. SSD has a controller, flash cells, and a PCIe bus. HDD has a spinning platter and a mechanical arm that physically seeks. Every layer adds physical distance and mechanical overhead.</p>
+
+  <h2>The "Is This Acceptable?" Test</h2>
+  <p>Use latency tiers to reality-check design decisions fast:</p>
+  <ul>
+    <li><strong>Cache miss in Redis</strong> should be ~100µs. If it's 10ms, your Redis is overloaded or networked wrong.</li>
+    <li><strong>DB query with good index</strong>: 1–10ms is normal (SSD read + network in DC). 100ms means missing index or table scan.</li>
+    <li><strong>Web page load</strong>: 100ms is fast, 1000ms is noticeable, 3000ms is failure.</li>
+    <li><strong>Cross-region replication lag</strong>: 100ms+ is expected. Design around it, don't fight it.</li>
+  </ul>
+
+  <h2>Practical Use in Interviews</h2>
+  <p>An interviewer says "your search service queries Elasticsearch on every autocomplete keystroke." You say: "Elasticsearch is in the same DC, so ~500µs per query. At 5 keystrokes/second per user, that's fine. But at 10M active users simultaneously, that's 50M queries/second — we need to debounce client-side and cache top queries in Redis."</p>
+  <p>That's latency tiers being used as a reasoning tool, not a lookup table.</p>
+
+  <div class="callout gate">
+    <div class="callout-title">Gate Question</div>
+    <p>You design a feature that reads a user's settings on every API request. Settings are in PostgreSQL. At 100k requests/second, is this acceptable?<br><br>
+    <strong>Answer:</strong> PostgreSQL read = ~1ms (SSD in DC). 100k/s is 100k concurrent queries. Postgres can handle ~5k–10k queries/sec on a single node before latency climbs. So no — cache settings in Redis (~100µs). That's a 10× latency win and removes DB load entirely.</p>
+  </div>
+
+  <div class="prev-next">
+    <div class="pn-card" style="visibility:hidden"></div>
+    <div class="pn-card next" onclick="goto('sd-02')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">SD-02: Capacity Estimation</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SD-02: CAPACITY ESTIMATION
+═══════════════════════════════════════════ -->
+<div id="p-sd-02" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-02</span>
+    <span class="phase-label">Foundations</span>
+  </div>
+  <h1>Capacity Estimation</h1>
+  <p class="page-desc">The opening 5 minutes of every system design interview. Not about being precise — about showing you can reason from first principles to architecture decisions. The skeleton matters more than the numbers.</p>
+
+  <h2>The 7-Step Skeleton</h2>
+  <p>Run through these in order, every time. Write numbers on the board as you go.</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>#</th><th>Step</th><th>Formula</th></tr>
+      <tr><td>1</td><td><strong>Writes/second</strong></td><td>daily_writes ÷ 10<sup>5</sup></td></tr>
+      <tr><td>2</td><td><strong>Reads/second</strong></td><td>writes/s × read:write ratio</td></tr>
+      <tr><td>3</td><td><strong>Size per event</strong></td><td>estimate KB or MB per record</td></tr>
+      <tr><td>4</td><td><strong>Storage/day</strong></td><td>writes/s × size × 86,400</td></tr>
+      <tr><td>5</td><td><strong>Total storage</strong></td><td>storage/day × retention days</td></tr>
+      <tr><td>6</td><td><strong>Bandwidth</strong></td><td>reads/s × size per event</td></tr>
+      <tr><td>7</td><td><strong>Servers needed</strong></td><td>peak_req/s ÷ capacity_per_server</td></tr>
+    </table>
+  </div>
+
+  <h2>The Most Important Anchor: 1 Day ≈ 10⁵ Seconds</h2>
+  <p>86,400 seconds in a day ≈ 100,000 = 10<sup>5</sup>. Not 10<sup>6</sup>.</p>
+  <div class="callout warn">
+    <div class="callout-title">Common mistake</div>
+    <p>Dividing by 10<sup>6</sup> instead of 10<sup>5</sup>. This gives numbers 10× too small. "500M tweets/day = 500 tweets/sec" is wrong. It's 5,000/sec. The anchor is 10<sup>5</sup>, always.</p>
+  </div>
+  <p>Drill until it's muscle memory:</p>
+  <ul>
+    <li>500M events/day → 5,000/sec</li>
+    <li>2B events/day → 20,000/sec</li>
+    <li>50M events/day → 500/sec</li>
+    <li>100M events/day → 1,000/sec</li>
+  </ul>
+
+  <h2>Read:Write Ratios</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Product type</th><th>Ratio</th><th>Reasoning</th></tr>
+      <tr><td>Social (Twitter, Instagram)</td><td>100:1</td><td>Every tweet is read by 100s of followers</td></tr>
+      <tr><td>Messaging (WhatsApp)</td><td>1:1</td><td>Every message sent is read once</td></tr>
+      <tr><td>Video streaming</td><td>10:1</td><td>Videos watched many times, uploaded rarely</td></tr>
+      <tr><td>Ride-sharing</td><td>5:1</td><td>Location updates written often, read for matching</td></tr>
+    </table>
+  </div>
+
+  <h2>Peak vs Average</h2>
+  <p>Traffic is never flat. Design for peak, not average.</p>
+  <ul>
+    <li><strong>Normal products</strong>: peak = 3× average (morning/evening spikes)</li>
+    <li><strong>Event-driven</strong>: peak = 10× average (ticket drops, product launches)</li>
+  </ul>
+
+  <h2>The Architecture Decision Table</h2>
+  <p>Numbers from the skeleton feed directly into architecture choices. This is the entire point of the exercise.</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Signal</th><th>Threshold</th><th>Architecture implication</th></tr>
+      <tr><td>Req/sec</td><td>&lt; 500</td><td>Single server monolith is fine</td></tr>
+      <tr><td>Req/sec</td><td>500–10k</td><td>Load balancer + multiple app servers</td></tr>
+      <tr><td>Req/sec</td><td>&gt; 10k</td><td>Horizontal scaling, caching, partitioning</td></tr>
+      <tr><td>Storage</td><td>&lt; 1 TB</td><td>Single database node</td></tr>
+      <tr><td>Storage</td><td>1–100 TB</td><td>Partitioned/sharded database</td></tr>
+      <tr><td>Storage</td><td>&gt; 100 TB</td><td>Distributed storage (S3, HDFS, Cassandra)</td></tr>
+      <tr><td>Write rate</td><td>&gt; 10k/sec</td><td>Kafka ingest + Cassandra or TimescaleDB</td></tr>
+      <tr><td>Bandwidth</td><td>&gt; 10 Gbps</td><td>CDN mandatory</td></tr>
+    </table>
+  </div>
+
+  <h2>Example: URL Shortener</h2>
+  <p>Given: 100M new URLs shortened per day, 10:1 read:write, 500 bytes per URL record, 5-year retention.</p>
+  <pre><code>Writes/sec  = 100M / 10^5 = 1,000/sec
+Reads/sec   = 1,000 × 10  = 10,000/sec
+Size/event  = 500 bytes
+Storage/day = 1,000 × 500B × 86,400 ≈ 43 GB/day
+Total       = 43 GB × 365 × 5 ≈ 78 TB
+Bandwidth   = 10,000 × 500B = 5 MB/sec (trivial)
+Servers     = 10,000 req/s ÷ 5,000 req/s per server = 2 servers</code></pre>
+  <p>Verdict: storage at 78 TB means we need a partitioned database. Reads at 10k/sec → need load balancer. Writes at 1k/sec → Postgres can handle it. Bandwidth is low → CDN optional.</p>
+
+  <div class="callout gate">
+    <div class="callout-title">Gate Question</div>
+    <p>WhatsApp: 1B users, 50 messages/user/day, each message 1 KB. How much storage per year?<br><br>
+    <strong>Answer:</strong> 1B × 50 = 50B messages/day. Storage/day = 50B × 1KB = 50 TB/day. Per year = 50 × 365 ≈ 18 PB. Implication: distributed storage (Cassandra + object store), no single Postgres.</p>
+  </div>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('sd-01')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">SD-01: Latency Tiers</div>
+    </div>
+    <div class="pn-card next" onclick="goto('sql-acid')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">SQL &amp; ACID Deep</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SQL & ACID
+═══════════════════════════════════════════ -->
+<div id="p-sql-acid" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-03</span>
+    <span class="phase-label">Data Layer</span>
+  </div>
+  <h1>SQL &amp; ACID Deep</h1>
+  <p class="page-desc">ACID isn't a checklist — it's four different mechanisms solving four different failure modes. If you can't explain the mechanism behind each letter, you don't know ACID.</p>
+
+  <h2>A — Atomicity</h2>
+  <p><strong>The failure mode it solves:</strong> You transfer ₹500 from Account A to Account B. That's two operations: debit A, credit B. If the server crashes after debiting A but before crediting B, ₹500 disappears.</p>
+  <p><strong>The guarantee:</strong> all operations in a transaction succeed together, or none of them do. No partial application.</p>
+  <p><strong>The mechanism — WAL (Write-Ahead Log):</strong> Before making any change to actual data pages, Postgres writes to an append-only log file: "I'm about to debit A by 500, credit B by 500." If the server crashes mid-transaction, on restart Postgres reads the WAL — sees the transaction was never fully committed — and reverses the partial changes. The log is the single source of truth about what happened and what needs to be rolled back.</p>
+  <div class="callout info">
+    <div class="callout-title">WAL bonus</div>
+    <p>The same WAL that enables rollback is also streamed to replicas for replication. One mechanism, two uses: crash recovery + standby synchronization.</p>
+  </div>
+
+  <h2>C — Consistency</h2>
+  <p><strong>The failure mode it solves:</strong> A foreign key constraint says every tweet must have a valid user_id. Without enforcement, you could INSERT a tweet pointing to user_id = 99999 which doesn't exist. Your data becomes incoherent.</p>
+  <p><strong>The guarantee:</strong> every transaction must leave the database in a valid state — one that satisfies all defined constraints (NOT NULL, UNIQUE, CHECK, FOREIGN KEY).</p>
+  <p><strong>The mechanism:</strong> constraint enforcement at write time. The DB checks every constraint before committing. If any constraint is violated, the transaction is rejected. Note: consistency is not automatic. You define the rules. The DB enforces them. If you don't define a constraint, the DB doesn't enforce it.</p>
+
+  <h2>I — Isolation</h2>
+  <p><strong>The failure mode it solves:</strong> Two users buy the last ticket at the same time. Both transactions read "1 ticket remaining." Both try to buy it. Without isolation, both succeed — you've sold 1 ticket twice.</p>
+  <p><strong>The guarantee:</strong> concurrent transactions don't interfere with each other. Each sees a consistent snapshot of the data.</p>
+  <p><strong>The mechanism — MVCC (Multi-Version Concurrency Control):</strong> Instead of locking rows (which blocks reads), Postgres keeps multiple versions of every row, each stamped with a transaction ID. When your transaction starts, it receives a snapshot ID. Every read in your transaction sees only rows whose version was committed before your snapshot ID. Other in-progress transactions are invisible to you. No locks — everyone reads their own snapshot simultaneously.</p>
+  <h3>Isolation Levels</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Level</th><th>Dirty read</th><th>Non-repeatable read</th><th>Phantom read</th></tr>
+      <tr><td>Read Uncommitted</td><td>Possible</td><td>Possible</td><td>Possible</td></tr>
+      <tr><td>Read Committed (PG default)</td><td>No</td><td>Possible</td><td>Possible</td></tr>
+      <tr><td>Repeatable Read</td><td>No</td><td>No</td><td>Possible</td></tr>
+      <tr><td>Serializable</td><td>No</td><td>No</td><td>No</td></tr>
+    </table>
+  </div>
+  <ul>
+    <li><strong>Dirty read</strong>: reading another transaction's uncommitted data</li>
+    <li><strong>Non-repeatable read</strong>: same row gives different values on two reads in the same transaction</li>
+    <li><strong>Phantom read</strong>: a re-run query returns different rows (new rows appeared mid-transaction)</li>
+  </ul>
+
+  <h2>D — Durability</h2>
+  <p><strong>The failure mode it solves:</strong> Transaction commits. Server crashes 50ms later. On restart, that transaction's data is gone.</p>
+  <p><strong>The guarantee:</strong> once a transaction is committed, it's permanent. Power loss, server crash, OS failure — none of these can lose a committed write.</p>
+  <p><strong>The mechanism — fsync:</strong> When Postgres commits a transaction, it calls <code>fsync()</code> — a system call that forces the OS to flush all write buffers to physical disk before returning "committed" to the client. Without fsync, data could sit in OS RAM (fast but volatile). With fsync, it's on disk before you know it succeeded. Cost: fsync is slow (~10ms). This is why database writes have measurable latency even for tiny records.</p>
+
+  <h2>Indexing</h2>
+  <p>Without an index, every query scans every row — O(n). With an index, the DB finds rows in O(log n) using a B-tree (balanced sorted tree).</p>
+  <h3>Composite Index Left-Prefix Rule</h3>
+  <p>An index on <code>(sender_id, created_at)</code> can serve queries that filter on:</p>
+  <ul>
+    <li><code>sender_id</code> alone ✓</li>
+    <li><code>sender_id AND created_at</code> ✓</li>
+    <li><code>created_at</code> alone ✗ — can't skip the first column</li>
+  </ul>
+  <p>Why? The index is sorted by sender_id first, then by created_at within each sender_id group. Without specifying sender_id, the DB doesn't know which sender_id's created_at values you want — the index is useless for the search.</p>
+  <div class="callout key">
+    <div class="callout-title">Bonus: ORDER BY</div>
+    <p>If your query is <code>WHERE sender_id = 42 ORDER BY created_at DESC</code>, the index on <code>(sender_id, created_at)</code> eliminates the sort step entirely — the rows are already in order within the index. This is a huge win at scale.</p>
+  </div>
+
+  <h2>Partitioning</h2>
+  <ul>
+    <li><strong>Range partitioning</strong>: rows with <code>created_at</code> in 2024 go to one partition, 2025 to another. Queries scoped to a date range only scan relevant partitions. Risk: if 90% of reads are for "today's data," all load hits one partition (hotspot).</li>
+    <li><strong>Hash partitioning</strong>: <code>user_id % 4</code> distributes rows evenly across 4 partitions. No hotspots. Trade-off: can't do range scans across partitions.</li>
+  </ul>
+
+  <h2>When Postgres Breaks</h2>
+  <p>Postgres is excellent until it isn't. Know the ceiling:</p>
+  <ul>
+    <li><strong>Single-node ceiling</strong>: ~10–50 TB of data, ~5–10k sustained writes/sec. Beyond this, you feel it.</li>
+    <li><strong>VACUUM bloat</strong>: MVCC keeps old row versions for concurrent readers. VACUUM cleans them. At high write rates (millions of rows/day updated), VACUUM can't keep up → dead rows accumulate → table bloat → everything slows.</li>
+    <li><strong>Cross-shard joins</strong>: once you split data across machines (sharding), JOINs across shards require fetching data from multiple machines and joining in the application. This is painful and slow.</li>
+    <li><strong>Schema migrations</strong>: <code>ALTER TABLE ADD COLUMN NOT NULL</code> on a 200M-row table can lock the entire table for minutes in production. You need migration strategies (add nullable first, backfill, add constraint).</li>
+  </ul>
+  <p><strong>Observable signals you've hit the wall:</strong> p99 query latency climbing despite good indexes. Buffer hit rate dropping below 95% (data doesn't fit in RAM). VACUUM running constantly and still losing ground. Replica lag consistently &gt; 1 second.</p>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('sd-02')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">SD-02: Capacity Estimation</div>
+    </div>
+    <div class="pn-card next" onclick="goto('nosql')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">NoSQL Selection</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     NOSQL SELECTION
+═══════════════════════════════════════════ -->
+<div id="p-nosql" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-03</span>
+    <span class="phase-label">Data Layer</span>
+  </div>
+  <h1>NoSQL Selection</h1>
+  <p class="page-desc">NoSQL is not "Postgres but faster." Each NoSQL database was built to solve a specific problem Postgres can't handle at scale. The choice is determined by your access pattern, not by preference.</p>
+
+  <h2>Cassandra</h2>
+  <p><strong>Built for:</strong> massive sustained write volume (millions/sec), time-series data, multi-region deployments.</p>
+  <p><strong>Architecture:</strong> a ring of equal nodes — no master, no single point of failure. You write to any node. That node acts as coordinator, hashing your partition key to determine which nodes actually own the data (typically 3 replicas).</p>
+  <p><strong>Write path:</strong> the write hits a commit log first (for durability, like WAL), then an in-memory structure called a Memtable, then is flushed to disk as immutable SSTables. Cassandra never updates in-place — it appends. This is why writes are so fast: no seek, no random write, just append.</p>
+  <p><strong>Consistency:</strong> tunable. You configure how many replicas must acknowledge a write before you call it successful. <code>ONE</code> = fastest, risk of stale reads. <code>QUORUM</code> = majority must agree, strongly consistent. <code>ALL</code> = slowest, all replicas must agree.</p>
+  <p><strong>Critical rule — design tables around queries:</strong> unlike SQL where you normalize data and JOIN at query time, Cassandra requires you to model data the way you'll read it. If you need to fetch "all messages from user 42, sorted by time", your table's partition key must be <code>user_id</code> and clustering key must be <code>created_at</code>. Cassandra can't JOIN.</p>
+  <div class="callout key">
+    <div class="callout-title">When to pick Cassandra</div>
+    <p>Massive write volume (IoT, activity feeds, logs). Time-series data. Known partition key (you always query by user_id or device_id). Multi-region with active-active writes. Self-hosted or want control over ops.</p>
+  </div>
+
+  <h2>DynamoDB</h2>
+  <p><strong>Built for:</strong> AWS-native workloads, variable/bursty traffic, zero operational overhead.</p>
+  <p><strong>Serverless:</strong> you don't manage servers, sharding, or scaling. Configure capacity (provisioned or on-demand), pay per request. AWS handles everything else.</p>
+  <p><strong>Data model:</strong> tables with a primary key. Primary key = partition key (mandatory) + optional sort key. With a sort key, you can range-query within a partition: <code>WHERE user_id = 42 AND timestamp BETWEEN t1 AND t2</code>.</p>
+  <p><strong>TTL:</strong> built-in item expiry. Set a TTL attribute on any item and DynamoDB automatically deletes it when expired. Perfect for sessions, caches, rate limit counters.</p>
+  <p><strong>Streams:</strong> every write (insert/update/delete) is published to DynamoDB Streams. Lambda functions can subscribe to react to changes — build event-driven workflows without Kafka.</p>
+  <div class="callout key">
+    <div class="callout-title">When to pick DynamoDB</div>
+    <p>Already on AWS. Can't afford Cassandra ops complexity. Traffic is spiky and unpredictable (on-demand mode absorbs spikes). Moderate scale (&lt; 100k writes/sec). Need TTL or Streams natively.</p>
+  </div>
+
+  <h2>MongoDB</h2>
+  <p><strong>Built for:</strong> variable/evolving schemas, hierarchical data, rich query patterns.</p>
+  <p><strong>Document model:</strong> stores JSON-like documents. No fixed schema — two documents in the same collection can have completely different fields. Perfect when your data structure evolves rapidly (early-stage products).</p>
+  <p><strong>Embedding vs referencing:</strong> should you store a user's address inside their user document (embedding), or in a separate collection with a reference (like a FK)?</p>
+  <ul>
+    <li><strong>Embed</strong> when data is accessed together always, doesn't grow unboundedly, and is "owned by" the parent document. Fetch in one read, no JOIN.</li>
+    <li><strong>Reference</strong> when data is shared (multiple documents reference the same author), or when the sub-document can grow large (comments array).</li>
+  </ul>
+  <p><code>$lookup</code> is MongoDB's JOIN equivalent — it joins across collections at query time. Slower than embedding but necessary for shared/referenced data.</p>
+  <div class="callout key">
+    <div class="callout-title">When to pick MongoDB</div>
+    <p>Schema is flexible or still evolving. Data is naturally hierarchical (product catalog with varying attributes per category). Need rich ad-hoc queries with aggregation. Don't need multi-region active-active writes.</p>
+  </div>
+
+  <h2>The Decision Framework</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Need</th><th>Pick</th><th>Reject</th></tr>
+      <tr><td>Massive sustained writes, time-series, multi-region</td><td>Cassandra</td><td>Postgres (ceiling), DynamoDB (ops)</td></tr>
+      <tr><td>AWS-native, bursty traffic, zero ops</td><td>DynamoDB</td><td>Cassandra (too much ops)</td></tr>
+      <tr><td>Flexible schema, rich queries, document model</td><td>MongoDB</td><td>Postgres (schema changes pain)</td></tr>
+      <tr><td>Caching, ephemeral data, microsecond reads</td><td>Redis</td><td>Any disk-based DB</td></tr>
+      <tr><td>ACID, JOINs, structured relational data</td><td>Postgres</td><td>All NoSQL options</td></tr>
+    </table>
+  </div>
+
+  <div class="callout warn">
+    <div class="callout-title">Cassandra vs DynamoDB confusion</div>
+    <p>Both look similar on the surface (distributed KV with partition keys). The differentiator is <strong>operations + scale + cloud</strong>. Very high volume + self-hosted + multi-region → Cassandra. Moderate volume + AWS + zero ops → DynamoDB.</p>
+  </div>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('sql-acid')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">SQL &amp; ACID Deep</div>
+    </div>
+    <div class="pn-card next" onclick="goto('redis')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">Redis Deep</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     REDIS DEEP
+═══════════════════════════════════════════ -->
+<div id="p-redis" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-03</span>
+    <span class="phase-label">Data Layer</span>
+  </div>
+  <h1>Redis Deep</h1>
+  <p class="page-desc">Redis is not a database replacement. It's a speed layer — RAM-resident, ~100 microsecond reads, purpose-built for the access patterns that would kill a disk-based DB under load.</p>
+
+  <h2>Data Structures</h2>
+  <p>Redis isn't just key-value. It has six data structures, each optimized for a specific pattern:</p>
+
+  <h3>String</h3>
+  <p>The basic type. Binary-safe — can hold text, JSON, or raw bytes. Key operations: <code>SET</code>, <code>GET</code>, <code>INCR</code>.</p>
+  <p><code>INCR pageviews</code> is atomic — no race conditions. Even if 10,000 requests hit simultaneously, each gets a unique incremented value. This replaces a <code>SELECT ... FOR UPDATE</code> in Postgres for counters.</p>
+
+  <h3>Hash</h3>
+  <p>A map of field→value pairs, like a mini-JSON object. <code>HSET user:42 name "Rudra" email "r@altagic.com"</code>. Read individual fields: <code>HGET user:42 name</code>. Update one field without rewriting the whole object. Perfect for user sessions, user profiles, configuration objects.</p>
+
+  <h3>List</h3>
+  <p>Ordered sequence with O(1) push/pop from both ends. <code>LPUSH</code> / <code>RPUSH</code> add items. <code>LRANGE feed:42 0 49</code> fetches the 50 most recent items. Use for: activity feeds, recent history, message queues (basic), task queues.</p>
+
+  <h3>Set</h3>
+  <p>Unordered collection of unique strings. <code>SADD followers:42 user_99</code>. <code>SISMEMBER followers:42 user_99</code> checks membership in O(1). <code>SINTER</code> finds mutual follows. Use for: tags, membership checks, deduplication.</p>
+
+  <h3>Sorted Set (ZSet)</h3>
+  <p>Like a Set but every member has a floating-point score. Members are stored sorted by score. <code>ZADD leaderboard 9450 "rudra"</code>. <code>ZRANK leaderboard "rudra"</code> → rank. <code>ZRANGE leaderboard 0 9 REV</code> → top 10. Updates are O(log n). Use for: leaderboards, priority queues, rate limiting with timestamps as scores, trending content.</p>
+
+  <h3>Pub/Sub</h3>
+  <p>Not a data structure — a message passing mechanism. <code>PUBLISH channel message</code>. Subscribers on that channel receive it instantly. Fire-and-forget: if no subscriber is connected, the message is lost. For durable messaging, use a List or Kafka instead.</p>
+
+  <h2>Eviction Policies</h2>
+  <p>Redis lives in RAM. When RAM fills up, something must give. You configure what:</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Policy</th><th>Behavior</th><th>When to use</th></tr>
+      <tr><td><code>allkeys-lru</code></td><td>Evict least recently used key across all keys</td><td>General cache (default recommendation)</td></tr>
+      <tr><td><code>volatile-lru</code></td><td>LRU, but only among keys with TTL set</td><td>Mixed data: some permanent, some ephemeral</td></tr>
+      <tr><td><code>allkeys-lfu</code></td><td>Evict least frequently used</td><td>Hot-key workloads (some keys 1000× hotter)</td></tr>
+      <tr><td><code>noeviction</code></td><td>Reject writes when full, return error</td><td>Redis is primary store, data loss is unacceptable</td></tr>
+    </table>
+  </div>
+
+  <h2>Cache Patterns</h2>
+  <h3>Cache-Aside (Lazy Loading)</h3>
+  <p>The application manages the cache. On every read:</p>
+  <ol>
+    <li>Check Redis → hit → return data.</li>
+    <li>Cache miss → fetch from Postgres → write to Redis with TTL → return data.</li>
+  </ol>
+  <p><strong>Pro:</strong> Only caches data that's actually read. Cache stays lean.<br>
+  <strong>Con:</strong> First request always misses. If Redis is down, app still works (falls back to DB).</p>
+
+  <h3>Write-Through</h3>
+  <p>Every DB write also writes to Redis immediately. Cache is always in sync.</p>
+  <p><strong>Pro:</strong> Cache hit rate is high from the start. No staleness.<br>
+  <strong>Con:</strong> Every write is now two writes (DB + Redis). Cache fills with data that might never be read.</p>
+
+  <h3>Write-Behind (Write-Back)</h3>
+  <p>Write to Redis first, return success to user immediately. Async worker writes to DB later.</p>
+  <p><strong>Pro:</strong> Extremely fast writes — no DB in the critical path.<br>
+  <strong>Con:</strong> If Redis crashes before the async write completes, data is permanently lost. Only use if you can tolerate data loss (analytics, view counts).</p>
+
+  <h2>TTL vs Invalidation</h2>
+  <ul>
+    <li><strong>TTL</strong>: <code>EXPIRE user:42 300</code> → auto-deletes in 5 minutes. Simple to implement. Staleness window = TTL value. User might see stale data for up to 5 minutes.</li>
+    <li><strong>Cache invalidation</strong>: when you update the DB, also run <code>DEL user:42</code> in Redis. Consistent — next read fetches fresh data. Harder to get right — you can miss invalidations, especially across services.</li>
+  </ul>
+  <div class="callout key">
+    <div class="callout-title">Rule of thumb</div>
+    <p>TTL for data where slight staleness is acceptable (feeds, product listings, leaderboards). Invalidation for data where accuracy is critical (user profile, inventory count, price).</p>
+  </div>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('nosql')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">NoSQL Selection</div>
+    </div>
+    <div class="pn-card next" onclick="goto('schema')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">Schema Design LLD</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCHEMA DESIGN LLD
+═══════════════════════════════════════════ -->
+<div id="p-schema" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-03</span>
+    <span class="phase-label">Data Layer</span>
+  </div>
+  <h1>Schema Design LLD</h1>
+  <p class="page-desc">Schema design is where interviews reveal if you can translate requirements into a data model. The process is a pipeline: entities → relationships → columns → indexes → normalization decision.</p>
+
+  <h2>The 4-Step Process</h2>
+  <ol>
+    <li><strong>Identify entities</strong> (the nouns in the requirements). For Twitter: User, Tweet, Follow, Like, Comment.</li>
+    <li><strong>Define relationships</strong>. 1:1 (user has one profile), 1:many (user has many tweets), many:many (user follows many users, user is followed by many users).</li>
+    <li><strong>Add columns, PKs, FKs, constraints.</strong> Timestamps everywhere: <code>created_at</code>, <code>updated_at</code>.</li>
+    <li><strong>Add indexes</strong> on FK columns, search columns, sort columns.</li>
+  </ol>
+
+  <h2>Relationship Patterns</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Relationship</th><th>Implementation</th><th>Example</th></tr>
+      <tr><td>1:1</td><td>Same table or FK in one table</td><td>User ↔ UserSettings</td></tr>
+      <tr><td>1:many</td><td>FK on the "many" side</td><td>User has many Tweets (tweet.user_id → users.id)</td></tr>
+      <tr><td>many:many</td><td>Junction table with composite PK</td><td>User follows User → follows(follower_id, following_id)</td></tr>
+    </table>
+  </div>
+
+  <h2>The Golden Rule: Never Store Derived Counts</h2>
+  <div class="callout warn">
+    <div class="callout-title">Do not do this</div>
+    <p><code>tweets.likes_count INT DEFAULT 0</code> — This column will get out of sync. Two concurrent likes increment from the same read value. Race condition. Trust is broken.</p>
+  </div>
+  <div class="callout key">
+    <div class="callout-title">Do this instead</div>
+    <p>Have a <code>likes</code> table. <code>SELECT COUNT(*) FROM likes WHERE tweet_id = ?</code>. This is always accurate. Cache the count in Redis if needed for performance.</p>
+  </div>
+  <p><strong>Why:</strong> the raw events (like actions) are the source of truth. The count is derived from them. You always store the source, and derive the derivative. If you store both, they can diverge. The count is not data — it's a computation on data.</p>
+
+  <h2>Twitter Schema Example</h2>
+  <pre><code>-- Core entities
+users (
+  id         BIGSERIAL PRIMARY KEY,
+  username   VARCHAR(50) UNIQUE NOT NULL,
+  email      VARCHAR(255) UNIQUE NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+)
+
+tweets (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    BIGINT REFERENCES users(id),
+  content    TEXT NOT NULL,           -- max 280 chars, enforce in app
+  created_at TIMESTAMPTZ DEFAULT now()
+)
+
+-- Many:many: user follows user
+follows (
+  follower_id  BIGINT REFERENCES users(id),
+  following_id BIGINT REFERENCES users(id),
+  created_at   TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (follower_id, following_id)  -- composite PK prevents duplicates
+)
+
+-- Many:many: user likes tweet
+likes (
+  user_id    BIGINT REFERENCES users(id),
+  tweet_id   BIGINT REFERENCES tweets(id),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (user_id, tweet_id)
+)</code></pre>
+
+  <h3>Indexes</h3>
+  <pre><code>-- Fetch a user's tweets, newest first
+CREATE INDEX idx_tweets_user_created ON tweets(user_id, created_at DESC);
+
+-- Count likes per tweet efficiently
+CREATE INDEX idx_likes_tweet ON likes(tweet_id);
+
+-- Fetch followers of a user
+CREATE INDEX idx_follows_following ON follows(following_id);</code></pre>
+
+  <h2>Uber Schema Example</h2>
+  <p>Key design decisions:</p>
+  <ul>
+    <li><strong>Driver location</strong>: a <code>driver_locations</code> Redis geo structure (<code>GEOADD</code>, <code>GEORADIUS</code>), not a Postgres table. B-tree can't do spatial proximity queries efficiently. Updated every 5 seconds — far too hot for Postgres.</li>
+    <li><strong>Ride status</strong>: a <code>status</code> column on the <code>rides</code> table with an enum: REQUESTED → ACCEPTED → IN_PROGRESS → COMPLETED → CANCELLED. Indexed on (driver_id, status) and (rider_id, status).</li>
+    <li><strong>Ratings</strong>: a separate <code>ratings</code> table — never a <code>rating FLOAT</code> column on the <code>users</code> table. Store the raw ratings, compute the average. Cache in Redis.</li>
+    <li><strong>Fare</strong>: compute at end of ride, store in <code>rides.fare_amount</code>. Not computed in real-time columns.</li>
+  </ul>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('redis')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">Redis Deep</div>
+    </div>
+    <div class="pn-card next" onclick="goto('kafka')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">Queues &amp; Kafka</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     QUEUES & KAFKA
+═══════════════════════════════════════════ -->
+<div id="p-kafka" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-04</span>
+    <span class="phase-label">Write Path</span>
+  </div>
+  <h1>Queues &amp; Kafka</h1>
+  <p class="page-desc">Synchronous service calls are fragile and can't absorb traffic spikes. Queues decouple services in space and time. Kafka extends this into a durable, replayable event log.</p>
+
+  <h2>Why Queues Exist</h2>
+  <p>Without a queue, Service A calls Service B directly (synchronous). Two failure modes:</p>
+  <ol>
+    <li><strong>Coupling:</strong> if B is down, A fails too. A user can't sign up because the email service is down.</li>
+    <li><strong>Traffic spikes:</strong> 100k signups in 1 minute hit the email service simultaneously. It falls over. All of them fail.</li>
+  </ol>
+  <p>With a queue: A drops a message ("send welcome email to user 42"), returns success to the user immediately. Email service picks messages up at its own pace. If email service is down for 10 minutes, messages wait. No user-facing failure.</p>
+
+  <h2>Queue vs Pub/Sub</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Pattern</th><th>Behavior</th><th>Use case</th></tr>
+      <tr><td><strong>Queue</strong></td><td>One consumer per message. Message deleted after processing.</td><td>Job processing — resize image, send email, process payment</td></tr>
+      <tr><td><strong>Pub/Sub</strong></td><td>Every subscriber gets every message independently.</td><td>Fan-out — new signup → analytics + email + recommendations all need to know</td></tr>
+    </table>
+  </div>
+
+  <h2>Kafka</h2>
+  <p>What makes Kafka different from a basic queue: <strong>retention</strong>. Messages are not deleted after consumption. They stay for a configured period (default: 7 days). Any consumer can re-read them at any time.</p>
+
+  <h3>Core Concepts</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Concept</th><th>What it is</th></tr>
+      <tr><td><strong>Topic</strong></td><td>A named category/channel for messages. <code>user-signups</code>, <code>order-placed</code>, <code>payment-processed</code>. Producers write to topics; consumers read from topics.</td></tr>
+      <tr><td><strong>Partition</strong></td><td>A topic is split into N ordered logs (partitions). Each partition lives on one broker. Partitions enable parallelism: 3 partitions → 3 consumers can read in parallel.</td></tr>
+      <tr><td><strong>Offset</strong></td><td>Your position in the log. Offset 500 = you've consumed 500 messages and are about to read 501. Stored per consumer group, per partition.</td></tr>
+      <tr><td><strong>Consumer group</strong></td><td>A group of consumers sharing a subscription. Each partition is owned by one consumer in the group. Multiple groups can read the same topic independently.</td></tr>
+      <tr><td><strong>Broker</strong></td><td>A Kafka server node that stores partitions and serves producers/consumers.</td></tr>
+    </table>
+  </div>
+
+  <h3>Why Consumer Groups Matter</h3>
+  <p>Analytics service and Email service both need every <code>user-signup</code> event. If they share one consumer group, each message goes to only one of them. Wrong.</p>
+  <p>Solution: Analytics service has its own consumer group (offset bookmark). Email service has its own group (separate bookmark). Each group reads the full topic at its own pace. Adding a third service? New consumer group. Zero change to the producer or existing consumers.</p>
+
+  <h3>What Happens When a Consumer Restarts</h3>
+  <p>Kafka stores each consumer group's last committed offset. On restart, the consumer reads its offset from Kafka → resumes from exactly where it stopped. No messages lost (within retention period). No messages duplicated (assuming idempotent processing).</p>
+
+  <div class="callout key">
+    <div class="callout-title">Partition count rule</div>
+    <p>Number of consumers per group ≤ number of partitions. If you have 3 partitions and add a 4th consumer, it sits idle — no partition to own. Scale partitions to scale consumers.</p>
+  </div>
+
+  <h2>Event Sourcing</h2>
+  <p>Traditional: store current state. <code>accounts.balance = 1250</code>.</p>
+  <p>Event sourcing: store every event that changed state. "Deposited 500. Withdrew 300. Deposited 1050. Withdrew 0."</p>
+  <p><strong>Current state = replay of all events.</strong></p>
+  <p><strong>Why this is powerful:</strong></p>
+  <ul>
+    <li><strong>Bug fixes via replay:</strong> found a calculation error in your fee formula? Correct the formula, replay all historical payment events → all historical balances are now correct.</li>
+    <li><strong>Audit trail:</strong> every state change is recorded with timestamp and actor. Natural compliance log.</li>
+    <li><strong>Time travel:</strong> what was the state of this account at 2pm yesterday? Replay events up to that timestamp.</li>
+  </ul>
+  <p><strong>Cost:</strong> rebuilding current state requires replaying potentially millions of events. Mitigated by periodic snapshots — save the current state every N events, so replays start from the nearest snapshot.</p>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('schema')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">Schema Design LLD</div>
+    </div>
+    <div class="pn-card next" onclick="goto('read-path')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">CDN, Replicas &amp; Search</div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGES 7-12 PLACEHOLDER — filled by part 2 -->
+<div id="p-read-path" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-05</span>
+    <span class="phase-label">Read Path</span>
+  </div>
+  <h1>CDN, Replicas &amp; Search</h1>
+  <p class="page-desc">Most systems are read-heavy. The read path is a cascade of layers — each one exists because the layer below it can't scale to the required read volume alone.</p>
+
+  <h2>CDN — Content Delivery Network</h2>
+  <p><strong>The problem:</strong> your origin server is in Mumbai. A user in New York downloads a 5MB image. Every byte travels Mumbai → Atlantic → New York. At 100ms round-trip latency, this is painful for content with many round trips.</p>
+  <p><strong>The solution:</strong> CDN edge servers sit in cities worldwide (New York, London, Singapore, São Paulo). When New York requests an image:</p>
+  <ol>
+    <li>Request hits the New York edge server (~5ms away).</li>
+    <li>Edge has the image cached → serves it immediately. 5ms total.</li>
+    <li>If not cached: edge fetches from Mumbai origin, caches it, serves it. Future New York requests are fast.</li>
+  </ol>
+
+  <h3>Static vs Dynamic Content</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Type</th><th>Examples</th><th>CDN behavior</th></tr>
+      <tr><td><strong>Static</strong></td><td>Images, CSS, JS bundles, fonts, video files</td><td>Cache globally. Same file for everyone.</td></tr>
+      <tr><td><strong>Dynamic</strong></td><td>Your Twitter feed, account page, search results</td><td>Cannot cache globally. Must hit origin. CDN passes through.</td></tr>
+    </table>
+  </div>
+  <p>The CDN decision rule: if two different users requesting the same URL should get the same response → static, cache it. If they'd get different responses → dynamic, origin handles it.</p>
+
+  <h2>Read Replicas</h2>
+  <p><strong>The problem:</strong> as read traffic grows, reads hit the primary DB → primary becomes the bottleneck. But primary is also handling writes. You can't just add RAM — a single Postgres can only handle so many concurrent queries.</p>
+  <p><strong>The solution:</strong> read replicas — exact copies of the primary database that serve read traffic. Primary handles all writes. Replicas handle reads. One primary + 3 replicas → 4× read throughput.</p>
+  <p><strong>The mechanism:</strong> the same WAL (Write-Ahead Log) that enables crash recovery is streamed over the network to replicas. Each replica applies those WAL entries in order, staying in sync with the primary. This is called <strong>WAL streaming replication</strong>.</p>
+
+  <h3>Replication Lag</h3>
+  <p>The replica is slightly behind the primary. From the moment a write commits on primary to the moment the replica applies it: typically 10–100ms under normal load, potentially seconds if the replica falls behind.</p>
+  <p><strong>Implications:</strong> if a user updates their profile and immediately reads it, routing that read to a replica might return stale data. Solutions:</p>
+  <ul>
+    <li><strong>Read-your-writes consistency:</strong> route reads to the primary for a brief window after the user's own write.</li>
+    <li><strong>Read from primary for critical data</strong> (bank balance, inventory, anything where stale is dangerous). Read from replica for everything else.</li>
+  </ul>
+
+  <h2>Elasticsearch — Full-Text Search</h2>
+  <p><strong>Why Postgres <code>LIKE '%keyword%'</code> doesn't scale:</strong> a leading wildcard (<code>%keyword</code>) can't use a B-tree index. The DB scans every row. At 100M rows, this takes seconds.</p>
+  <p><strong>The inverted index:</strong> instead of document → words (what a B-tree does), an inverted index stores word → list of document IDs that contain that word.</p>
+  <pre><code>"garak"    → [doc_42, doc_117, doc_899]
+"redis"    → [doc_3,  doc_42, doc_506]
+"security" → [doc_42, doc_201, doc_899]
+
+Query "garak redis" → intersect lists → [doc_42]</code></pre>
+  <p>Elasticsearch is built on this data structure. Query: "find all tweets containing 'agentic security'" → look up both words in the index → intersect → return results. This is O(matches), not O(total documents).</p>
+
+  <div class="callout key">
+    <div class="callout-title">Elasticsearch sits beside Postgres, not instead of it</div>
+    <p>Postgres is your source of truth. Elasticsearch is your search index. When a tweet is created, write to Postgres (durable) and index in Elasticsearch (searchable). Never use Elasticsearch as primary storage — it's not designed for it.</p>
+  </div>
+
+  <h2>The Full Read Path Stack</h2>
+  <pre><code>User request
+  → CDN edge               (static files: images, JS, CSS, video)
+  → API gateway / LB       (route, auth, rate limit)
+  → Redis cache             (frequently-read objects: user profiles, feeds)
+  → Elasticsearch           (full-text search queries only)
+  → Read replica            (most DB reads)
+  → Primary DB              (writes only + critical reads)</code></pre>
+  <p>Each layer exists because the layer below it would be overwhelmed alone. Cache misses fall through to replicas. Replica misses fall through to primary. Primary is the last resort for reads.</p>
+
+  <div class="callout gate">
+    <div class="callout-title">Gate Question</div>
+    <p>Design how YouTube serves a video to a user in Brazil. The video was uploaded from India.<br><br>
+    <strong>Answer:</strong> On upload: transcode video → store in object storage (S3/GCS) → push to CDN edge nodes globally. On watch: user in Brazil requests video → CDN POP in São Paulo serves it from local edge cache. No traffic to India origin. Metadata (title, view count) comes from API → Redis cache → DB read replica. Comments from separate service.</p>
+  </div>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('kafka')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">Queues &amp; Kafka</div>
+    </div>
+    <div class="pn-card next" onclick="goto('scalability')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">Load Balancing &amp; Hashing</div>
+    </div>
+  </div>
+</div>
+<div id="p-scalability" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-06</span>
+    <span class="phase-label">Scalability</span>
+  </div>
+  <h1>Load Balancing &amp; Consistent Hashing</h1>
+  <p class="page-desc">Scale isn't just about adding servers — it's about routing traffic intelligently and distributing data so adding or removing nodes doesn't cause a cache miss avalanche.</p>
+
+  <h2>Load Balancing Algorithms</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Algorithm</th><th>Behavior</th><th>Best for</th><th>Weakness</th></tr>
+      <tr><td><strong>Round Robin</strong></td><td>Requests cycle 1→2→3→1→2→3</td><td>Stateless servers, uniform request cost</td><td>Ignores server load — one heavy request can pile up</td></tr>
+      <tr><td><strong>Least Connections</strong></td><td>Route to server with fewest active connections</td><td>Variable request durations (some take 10ms, some 5s)</td><td>Slightly more overhead to track connection counts</td></tr>
+      <tr><td><strong>IP Hash</strong></td><td>Hash user IP → always same server</td><td>Sticky sessions when needed</td><td>Hot spots if one IP range is disproportionately large</td></tr>
+    </table>
+  </div>
+
+  <h2>Stateless Servers Are Mandatory for Horizontal Scaling</h2>
+  <p>If Server A stores your login session in its own RAM, Server B doesn't know you're logged in. Load balancer sends your next request to B → you're logged out.</p>
+  <p><strong>The fix:</strong> servers must be stateless. Every piece of state lives in a shared external store (Redis for sessions, S3 for files, Postgres for data). Any server can handle any request because they all read from the same shared stores. Now you can add or remove servers freely.</p>
+  <div class="callout key">
+    <div class="callout-title">The stateless rule</div>
+    <p>A server that dies should leave no user-visible damage. If your app breaks when you kill a random server, it has state in the wrong place.</p>
+  </div>
+
+  <h2>Consistent Hashing — The Problem</h2>
+  <p>You're caching data across 4 servers. Naive approach: <code>server = hash(key) % 4</code>. Works fine until you add a 5th server. Now <code>hash(key) % 5</code> gives different results for almost every key → virtually all keys remap to different servers → massive cache miss wave → all requests hit the DB → DB falls over.</p>
+  <p>Adding or removing one server should move the minimum amount of data, not almost all of it.</p>
+
+  <h2>The Consistent Hashing Ring</h2>
+  <p>Visualize a ring of values 0 to 2<sup>32</sup>. Each server is placed on the ring by hashing its identifier. Each key is placed on the ring by hashing the key. A key routes to the first server encountered when moving clockwise from the key's position.</p>
+  <pre><code>Ring positions (simplified):
+     0
+  S3 ·         · S1
+      \       /
+       ·  K  ·
+      /       \
+  S2 ·         · (empty)
+
+Key K routes clockwise → hits S1</code></pre>
+  <p><strong>Adding a server (S5):</strong> S5 is placed somewhere on the ring. It only takes ownership of keys between the previous server and S5's position. All other keys are unaffected. With 4 servers, adding 1 moves ~1/5 of keys (one server's worth), not all keys.</p>
+  <p><strong>Removing a server:</strong> its keys move to the next server clockwise. ~1/4 of keys affected.</p>
+  <div class="callout key">
+    <div class="callout-title">The math</div>
+    <p>With N servers, adding or removing one server remaps <strong>only 1/N of all keys</strong>. With naive modulo, a server change remaps almost all keys. The difference at scale is between a small cache warm-up and a full DB meltdown.</p>
+  </div>
+
+  <h2>Virtual Nodes</h2>
+  <p><strong>Problem:</strong> with only 4 physical servers on the ring, their hash positions might be clustered unevenly. One server ends up owning 40% of the ring, another only 10%. Unequal load.</p>
+  <p><strong>Solution:</strong> virtual nodes. Each physical server gets multiple (typically ~150) positions on the ring, each representing a virtual node. The positions are determined by hashing the server ID with different seeds: <code>hash("server1-1")</code>, <code>hash("server1-2")</code>, ..., <code>hash("server1-150")</code>.</p>
+  <p>With 150 virtual nodes per server, the positions are statistically even around the ring. When you remove a physical server, its 150 positions are redistributed to all remaining servers — very smooth redistribution with no single server inheriting disproportionately.</p>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('read-path')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">CDN, Replicas &amp; Search</div>
+    </div>
+    <div class="pn-card next" onclick="goto('reliability')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">Replication &amp; Consensus</div>
+    </div>
+  </div>
+</div>
+<div id="p-reliability" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-07</span>
+    <span class="phase-label">Reliability</span>
+  </div>
+  <h1>Replication &amp; Consensus</h1>
+  <p class="page-desc">Systems fail. Reliability is the art of designing for failure so that when individual components die, the system as a whole keeps working — without losing data or serving contradictory state.</p>
+
+  <h2>Sync vs Async Replication</h2>
+  <p>When primary writes to disk, how does the replica get that write?</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th></th><th>Synchronous</th><th>Asynchronous</th></tr>
+      <tr><td><strong>How</strong></td><td>Primary waits for replica to acknowledge the write before confirming to client</td><td>Primary confirms to client immediately; sends to replica in background</td></tr>
+      <tr><td><strong>Data loss</strong></td><td>Zero — replica has the data before client is told "success"</td><td>Up to a few seconds of writes if primary crashes before replica catches up</td></tr>
+      <tr><td><strong>Write latency</strong></td><td>Higher — adds network round-trip to replica</td><td>Lower — no waiting</td></tr>
+      <tr><td><strong>Default in Postgres</strong></td><td>No</td><td>Yes</td></tr>
+    </table>
+  </div>
+  <p>Choose sync for: financial transactions, anything where data loss is unacceptable. Choose async for: most applications where "replay the last few seconds of writes" is survivable.</p>
+
+  <h2>Failover</h2>
+  <p><strong>Heartbeats:</strong> the primary and replicas send heartbeats to each other every N milliseconds (typically 100–500ms). If a heartbeat isn't received within a timeout window, the sender is suspected dead.</p>
+  <p><strong>Failover sequence:</strong></p>
+  <ol>
+    <li>Replicas stop receiving heartbeats from primary.</li>
+    <li>After N missed heartbeats (to avoid false positives), failover is triggered.</li>
+    <li>A failover controller (Patroni, etcd, or managed DB service) promotes the most up-to-date replica to primary.</li>
+    <li>DNS record or load balancer config is updated to point to new primary.</li>
+    <li>Other replicas re-sync from the new primary.</li>
+    <li>Old primary returns? It becomes a replica of the new primary, replays WAL to catch up.</li>
+  </ol>
+
+  <h2>Split-Brain</h2>
+  <p>The most dangerous reliability failure. A network partition splits your cluster: primary and replica can't reach each other. Both think the other is dead. Both accept writes. Now you have two primaries diverging — true split-brain. When the partition heals, you have two conflicting versions of truth with no way to automatically reconcile them.</p>
+  <p><strong>Prevention:</strong> use consensus protocols that require a majority to elect a leader. With 5 nodes in a 3/2 partition, only the 3-node side can elect a leader. The 2-node side can't get majority → it refuses writes → no split-brain.</p>
+
+  <h2>Raft Consensus</h2>
+  <p>Raft is a consensus algorithm that ensures a cluster agrees on one leader at a time, even during network partitions and node failures.</p>
+
+  <h3>Core concepts</h3>
+  <ul>
+    <li><strong>Quorum:</strong> majority of nodes must agree on any decision. For 5 nodes, quorum = 3. For 3 nodes, quorum = 2.</li>
+    <li><strong>Leader election:</strong> when no leader exists (startup or primary death), nodes vote. A node needs quorum votes to become leader. Only the node with the most up-to-date log wins — no stale node can accidentally become leader and serve old data.</li>
+    <li><strong>Log replication:</strong> leader receives a write → replicates to followers → once quorum confirms receipt → commits → tells client success. If the leader dies before quorum confirms, the write is not committed and the client retries.</li>
+    <li><strong>Safety:</strong> at most one leader per term (election round). Two leaders can't both get quorum simultaneously — the majority can only be in one place.</li>
+  </ul>
+  <div class="callout warn">
+    <div class="callout-title">Quorum and availability trade-off</div>
+    <p>With 5 nodes and quorum of 3: tolerate 2 node failures (still have 3). If 3 fail → cluster stops accepting writes (better unavailable than inconsistent). This is a deliberate trade-off: CP not AP in CAP terms.</p>
+  </div>
+
+  <h2>Circuit Breaker Pattern</h2>
+  <p><strong>The failure mode:</strong> your service calls Payment API. Payment API is degraded — each call takes 30 seconds before timing out. Without protection: every user request holds a thread for 30 seconds → threads pile up → your service runs out of threads → your service crashes → the services that call you also crash. One slow dependency cascades into a full outage.</p>
+  <p>The circuit breaker sits in front of the downstream call and tracks its health. It has three states:</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>State</th><th>Behavior</th><th>Transition</th></tr>
+      <tr><td><strong>Closed</strong> (normal)</td><td>All requests pass through. Failure rate tracked.</td><td>→ Open when failure rate exceeds threshold (e.g., 50% in last 10 calls)</td></tr>
+      <tr><td><strong>Open</strong> (tripped)</td><td>All requests immediately return error. No calls to downstream. Downstream gets time to recover.</td><td>→ Half-open after timeout window (e.g., 30 seconds)</td></tr>
+      <tr><td><strong>Half-open</strong> (testing)</td><td>One test request allowed through.</td><td>→ Closed if success. → Open if failure.</td></tr>
+    </table>
+  </div>
+  <p>The key insight: <strong>failing fast is better than slow failure</strong>. An immediate error to the user is better than a 30-second hang. And stopping calls gives the downstream service a chance to recover instead of being hammered while degraded.</p>
+
+  <div class="callout gate">
+    <div class="callout-title">Gate Question</div>
+    <p>You have 5 Kafka broker nodes. Two brokers die. Can the cluster still accept writes?<br><br>
+    <strong>Answer:</strong> Yes. Quorum = 3. With 5 nodes, 2 deaths leave 3 — still a majority. Raft can elect a leader from the remaining 3. The cluster stays up. If a 3rd broker dies (only 2 left, below quorum), the cluster refuses writes to stay consistent.</p>
+  </div>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('scalability')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">Load Balancing &amp; Hashing</div>
+    </div>
+    <div class="pn-card next" onclick="goto('communication')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">REST, gRPC &amp; WebSockets</div>
+    </div>
+  </div>
+</div>
+<div id="p-communication" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-08</span>
+    <span class="phase-label">Communication</span>
+  </div>
+  <h1>REST, gRPC &amp; WebSockets</h1>
+  <p class="page-desc">Services communicate through protocols. The choice of protocol determines latency, type safety, connection model, and operational complexity. Each protocol exists because the others can't do its job well.</p>
+
+  <h2>REST</h2>
+  <p>REST is not a protocol — it's a set of architectural constraints for building APIs over HTTP. The core idea: <strong>resources</strong> (nouns, not verbs). A user is a resource. A tweet is a resource. You act on resources using HTTP methods.</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Method</th><th>Meaning</th><th>Example</th></tr>
+      <tr><td><code>GET</code></td><td>Read a resource</td><td><code>GET /users/42</code></td></tr>
+      <tr><td><code>POST</code></td><td>Create a resource</td><td><code>POST /tweets</code></td></tr>
+      <tr><td><code>PUT</code></td><td>Replace a resource entirely</td><td><code>PUT /users/42</code></td></tr>
+      <tr><td><code>PATCH</code></td><td>Update specific fields</td><td><code>PATCH /users/42</code> (just the name field)</td></tr>
+      <tr><td><code>DELETE</code></td><td>Delete a resource</td><td><code>DELETE /tweets/99</code></td></tr>
+    </table>
+  </div>
+  <h3>Status Codes</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Range</th><th>Meaning</th><th>Key codes</th></tr>
+      <tr><td>2xx</td><td>Success</td><td>200 OK, 201 Created, 204 No Content</td></tr>
+      <tr><td>4xx</td><td>Client error</td><td>400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found, 429 Too Many Requests</td></tr>
+      <tr><td>5xx</td><td>Server error</td><td>500 Internal Server Error, 503 Service Unavailable</td></tr>
+    </table>
+  </div>
+  <p><strong>Statelessness:</strong> every REST request must be self-contained. The server holds no session memory between requests. Auth token is sent in every request header (<code>Authorization: Bearer &lt;token&gt;</code>). This is what enables horizontal scaling — any server can handle any request because there's no session to maintain.</p>
+
+  <h2>gRPC</h2>
+  <p><strong>The problem with REST JSON for internal services:</strong> JSON is text. Parsing 50 fields of JSON on every inter-service call is CPU-expensive. With 50 microservices calling each other thousands of times per second, this overhead adds up.</p>
+  <p><strong>gRPC uses Protocol Buffers (protobuf):</strong> binary serialization format. Smaller payload (3–10× smaller than equivalent JSON), faster to serialize/deserialize. You define the API in a <code>.proto</code> file:</p>
+  <pre><code>service UserService {
+  rpc GetUser (UserRequest) returns (UserResponse);
+}
+
+message UserRequest {
+  int64 user_id = 1;
+}
+
+message UserResponse {
+  string name  = 1;
+  string email = 2;
+  int64  age   = 3;
+}</code></pre>
+  <p>The <code>.proto</code> file generates client and server code in any language automatically. Type-safe — the compiler catches mismatches. Strongly typed contracts between services.</p>
+  <div class="callout warn">
+    <div class="callout-title">gRPC is internal only</div>
+    <p>Browsers can't speak HTTP/2 binary frames natively. gRPC is for service-to-service communication only. Your public API must be REST. Internal: gRPC. External: REST.</p>
+  </div>
+
+  <h2>WebSockets</h2>
+  <p><strong>The problem with HTTP for real-time:</strong> HTTP is request-response. Client asks, server answers. If a new message arrives for you, the server can't push it to you — it has to wait for you to ask. This forces polling: "any new messages? no. any new messages? no. any new messages? yes, here's 3." Wasteful and slow.</p>
+  <p><strong>WebSocket:</strong> a persistent bidirectional connection. After the initial HTTP handshake (<code>Upgrade: websocket</code>), the connection stays open. Both sides can send data at any time without waiting for the other to ask.</p>
+  <p><strong>Use for:</strong> chat (other user's message → server pushes to you), live sports scores, collaborative document editing (someone else moves a cursor → all editors see it), order status updates, live dashboards.</p>
+  <p><strong>Cost:</strong> a persistent connection has a cost. Each connection holds a file descriptor. At 1M concurrent users, you need a server that can hold 1M open connections (not 1M requests/second — different scale). This is why WebSocket servers are often separate from API servers.</p>
+
+  <h2>Webhooks</h2>
+  <p>Not a persistent connection — the opposite of WebSockets. An external service POSTs to your URL when something happens. You register your URL with the service. When the event occurs, they call you.</p>
+  <p>Example: Razorpay payment succeeds → Razorpay sends <code>POST https://yourapp.com/webhooks/payment</code> with the payment data. You process it. No polling, no persistent connection.</p>
+  <div class="callout info">
+    <div class="callout-title">Validate webhook signatures</div>
+    <p>Anyone can POST to your webhook URL. Always verify the HMAC signature that Razorpay/Stripe/GitHub sends in the request header — it proves the request actually came from them, not a spoofed request.</p>
+  </div>
+
+  <h2>API Gateway</h2>
+  <p><strong>The problem:</strong> without a gateway, every microservice must independently handle auth, rate limiting, logging, SSL termination, and CORS. 50 services × 5 cross-cutting concerns = 250 redundant implementations that can drift out of sync.</p>
+  <p><strong>API Gateway:</strong> a single entry point for all external traffic. Routes requests to the right service. Handles cross-cutting concerns once:</p>
+  <ul>
+    <li><strong>Authentication:</strong> validate JWT at gateway. Services trust the gateway's forwarded user context.</li>
+    <li><strong>Rate limiting:</strong> 100 req/min per API key, enforced at the gateway before requests hit your services.</li>
+    <li><strong>SSL termination:</strong> HTTPS at the gateway. Internal traffic can be HTTP (simpler, faster).</li>
+    <li><strong>Logging:</strong> every request logged centrally. No per-service logging setup needed.</li>
+    <li><strong>Routing:</strong> <code>/api/users</code> → User Service, <code>/api/tweets</code> → Tweet Service. Clients know one URL.</li>
+  </ul>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('reliability')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">Replication &amp; Consensus</div>
+    </div>
+    <div class="pn-card next" onclick="goto('lld')">
+      <div class="pn-dir">Next →</div>
+      <div class="pn-title">OOP, SOLID &amp; Patterns</div>
+    </div>
+  </div>
+</div>
+<div id="p-lld" class="doc-page">
+  <div class="page-eyebrow">
+    <span class="session-pill">SD-09</span>
+    <span class="phase-label">LLD Deep</span>
+  </div>
+  <h1>OOP, SOLID &amp; Design Patterns</h1>
+  <p class="page-desc">Low-level design is about class structure, not architecture. You're given a concrete system ("design a parking lot") and must model it in classes that are extensible, testable, and coherent.</p>
+
+  <h2>OOP — Four Pillars</h2>
+
+  <h3>Encapsulation</h3>
+  <p>Bundle data and the methods that operate on that data into one unit. Control what's accessible from outside. A <code>BankAccount</code> has a <code>balance</code> (private) and <code>deposit()</code> / <code>withdraw()</code> (public). You can't say <code>account.balance = 1000000</code> directly. You must use the methods, which enforce business rules (can't withdraw more than balance). The methods are the interface; the data is hidden.</p>
+  <p><strong>Why it matters:</strong> if <code>balance</code> is public, any code anywhere can corrupt it. Encapsulation means corruption can only happen through a controlled pathway you own and can audit.</p>
+
+  <h3>Inheritance</h3>
+  <p>A class can extend another class, inheriting all its attributes and methods, and adding its own. <code>ElectricCar extends Car</code>. Car has <code>start()</code>, <code>stop()</code>, <code>fuel_type</code>. ElectricCar inherits those and adds <code>charge()</code>, overrides <code>start()</code> to be silent. The "is-a" relationship — an ElectricCar IS-A Car.</p>
+  <p><strong>When to use:</strong> genuine "is-a" relationships. When abused (inheriting for code reuse when there's no "is-a"), it creates fragile hierarchies. Prefer composition over inheritance when in doubt.</p>
+
+  <h3>Polymorphism</h3>
+  <p>Same method name, different behavior depending on the object type. <code>Shape</code> has <code>area()</code>. <code>Circle</code> implements it as π×r². <code>Rectangle</code> implements it as w×h. Code that calls <code>shape.area()</code> doesn't care which shape it is — the right formula runs automatically. Same method name, different behavior per type.</p>
+  <p><strong>Why it matters:</strong> you can write code against the abstract <code>Shape</code> type and it works for any shape you add in the future — no if/else chains, no switching on type.</p>
+
+  <h3>Abstraction</h3>
+  <p>Hide complexity behind a clean interface. <code>EmailSender.send(to, subject, body)</code>. You don't know if it uses SMTP, SendGrid, or AWS SES. You just call <code>send()</code>. The implementation is abstracted away. Abstraction is what lets you swap implementations without changing callers.</p>
+
+  <h2>SOLID Principles</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Letter</th><th>Principle</th><th>Violation</th><th>Fix</th></tr>
+      <tr><td><strong>S</strong></td><td>Single Responsibility — one class, one reason to change</td><td>A class handles payments AND sends emails AND logs to DB</td><td>Split into PaymentProcessor, EmailNotifier, AuditLogger</td></tr>
+      <tr><td><strong>O</strong></td><td>Open/Closed — open for extension, closed for modification</td><td>Adding SMS requires editing existing NotificationService</td><td>NotificationService depends on Notifier interface. Add SMSNotifier without touching existing code.</td></tr>
+      <tr><td><strong>L</strong></td><td>Liskov Substitution — subclass must be substitutable for parent</td><td>Bird has fly(). Penguin extends Bird. penguin.fly() throws.</td><td>Remove fly() from Bird. Add FlyingBird interface. Only birds that fly implement it.</td></tr>
+      <tr><td><strong>I</strong></td><td>Interface Segregation — small focused interfaces</td><td>File interface has read(), write(), delete(). ReadOnlyFile must implement write() and throw.</td><td>Split into Readable, Writable, Deletable interfaces.</td></tr>
+      <tr><td><strong>D</strong></td><td>Dependency Inversion — depend on abstractions</td><td>OrderService creates <code>new MySQLDatabase()</code> internally</td><td>Pass a Database interface into OrderService. Swap MySQL → Postgres without touching OrderService.</td></tr>
+    </table>
+  </div>
+
+  <h2>Design Patterns</h2>
+
+  <h3>Singleton</h3>
+  <p>Ensures only one instance of a class exists in the entire application. Used for: logger, database connection pool, config manager — things that should be shared and consistent everywhere.</p>
+  <pre><code>class Logger:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def log(self, msg):
+        print(f"[LOG] {msg}")
+
+# These are the same object
+a = Logger()
+b = Logger()
+assert a is b  # True</code></pre>
+  <p><strong>Thread safety concern:</strong> if two threads call <code>Logger()</code> simultaneously before the instance is created, both might create separate instances. Fix: use a lock around the creation check, or use the module-level import pattern in Python (modules are singletons by default).</p>
+
+  <h3>Factory</h3>
+  <p>Centralizes object creation by type. Instead of <code>new EmailNotification()</code> scattered across 50 files, you have one place:</p>
+  <pre><code>class NotificationFactory:
+    @staticmethod
+    def create(channel: str) -> Notification:
+        if channel == "email":   return EmailNotification()
+        if channel == "sms":     return SMSNotification()
+        if channel == "push":    return PushNotification()
+        raise ValueError(f"Unknown channel: {channel}")</code></pre>
+  <p>Adding WhatsApp notifications? Add one line to the factory. No other code changes. All callers automatically get WhatsApp support. This satisfies the Open/Closed principle.</p>
+
+  <h3>Observer</h3>
+  <p>When one object changes, automatically notify many other objects. The notifying object (publisher) maintains a list of subscribers. On change, calls <code>notify()</code> on all of them.</p>
+  <pre><code>class EventBus:
+    def __init__(self):
+        self._subscribers = {}
+
+    def subscribe(self, event, handler):
+        self._subscribers.setdefault(event, []).append(handler)
+
+    def publish(self, event, data):
+        for handler in self._subscribers.get(event, []):
+            handler(data)
+
+bus = EventBus()
+bus.subscribe("user_registered", analytics.track)
+bus.subscribe("user_registered", email_service.send_welcome)
+bus.subscribe("user_registered", recommender.initialize)
+
+# When user registers:
+bus.publish("user_registered", {"user_id": 42, "email": "r@..."})</code></pre>
+  <p>UserService publishes, doesn't know who's listening. Add a new subscriber → one line, no change to UserService. This is OOP's version of pub/sub.</p>
+
+  <h2>Class Diagram Notation</h2>
+  <pre><code>┌───────────────────────────────────┐
+│         ClassName                 │  ← Name section
+├───────────────────────────────────┤
+│  - private_field: Type            │  ← Attributes
+│  + public_field: Type             │    (- private, + public, # protected)
+├───────────────────────────────────┤
+│  + public_method(arg): ReturnType │  ← Methods
+│  - _private_helper(): void        │
+└───────────────────────────────────┘
+
+Relationships:
+  A ──▷ B     Inheritance (A extends B, hollow arrowhead)
+  A ◆── B     Composition (A owns B, filled diamond — B can't exist without A)
+  A ──▷ B     Association (A uses/knows about B, plain arrow)
+  A - - ▷ B  Interface implementation (dashed hollow arrow)</code></pre>
+
+  <h2>Parking Lot LLD</h2>
+  <pre><code>ParkingLot
+  - floors: List[Floor]
+  + park(vehicle: Vehicle) → Ticket
+  + unpark(ticket: Ticket) → float  # returns fee
+  + find_slot(vtype: VehicleType) → Slot | None
+
+Floor
+  - id: int
+  - slots: List[Slot]
+
+Slot
+  - id: str
+  - type: SlotType  # BIKE | CAR | TRUCK
+  - is_occupied: bool
+  - vehicle: Vehicle | None
+  + occupy(v: Vehicle)
+  + vacate()
+
+Vehicle (abstract)
+  - license_plate: str
+  - type: VehicleType
+Car, Bike, Truck extend Vehicle
+
+Ticket
+  - id: str
+  - slot: Slot
+  - vehicle: Vehicle
+  - entry_time: datetime
+  + calculate_fee() → float  # based on duration + slot type</code></pre>
+
+  <h2>Library LLD — Your Exercise</h2>
+  <p>The key you were missing: Member-borrows-Book is many:many over time. A member borrows many books. A book is borrowed by many members sequentially. This transaction needs its own class — <code>Loan</code>. Same pattern as <code>Ticket</code> in parking lot and <code>OrderItem</code> in e-commerce.</p>
+  <pre><code>Library
+  - books: List[Book]
+  - members: List[Member]
+  - loans: List[Loan]
+  + borrow_book(member, book) → Loan
+  + return_book(loan: Loan)
+  + find_book(title: str) → Book | None
+
+Member
+  - member_id: str
+  - name: str
+  - active_loans: List[Loan]
+
+Book
+  - isbn: str
+  - title: str
+  - author: str
+  - copies_available: int  # decrements on borrow, increments on return
+
+Loan
+  - member: Member
+  - book: Book
+  - borrowed_at: datetime
+  - due_date: datetime
+  - returned_at: datetime | None  # None = still borrowed
+  + is_overdue() → bool
+  + is_active() → bool  # returned_at is None</code></pre>
+  <div class="callout key">
+    <div class="callout-title">The transaction class pattern</div>
+    <p>Any time two entities interact in a transaction — borrow, order, park, purchase — that interaction needs its own class. Member + Book → Loan. Vehicle + Slot → Ticket. User + Product → OrderItem. Don't put the transaction's data on either entity — it belongs to the relationship itself.</p>
+  </div>
+
+  <div class="prev-next">
+    <div class="pn-card" onclick="goto('communication')">
+      <div class="pn-dir">← Previous</div>
+      <div class="pn-title">REST, gRPC &amp; WebSockets</div>
+    </div>
+    <div class="pn-card" style="visibility:hidden"></div>
+  </div>
+</div>
+
+  </div><!-- end content-scroll -->
+</div><!-- end main -->
+
+<!-- SEARCH OVERLAY -->
+<div id="search-overlay" class="search-overlay" onclick="closeSearch(event)">
+  <div class="search-box">
+    <input id="search-input" type="text" placeholder="Search sessions, concepts, patterns..." oninput="runSearch(this.value)" onkeydown="searchNav(event)">
+    <div class="search-results" id="search-results"></div>
+  </div>
+</div>
+
+<script>
+const PAGE_META = [
+  { id:'sd-01',       title:'Latency Tiers',               badge:'SD-01', crumb:'Foundations',  keywords:'L1 cache RAM SSD HDD nanoseconds microseconds milliseconds 1000x latency' },
+  { id:'sd-02',       title:'Capacity Estimation',          badge:'SD-02', crumb:'Foundations',  keywords:'estimation QPS writes reads storage bandwidth servers 7 steps unit conversion 10^5' },
+  { id:'sql-acid',    title:'SQL & ACID Deep',              badge:'SD-03', crumb:'Data Layer',   keywords:'ACID atomicity consistency isolation durability WAL MVCC fsync B-tree index composite partition postgres' },
+  { id:'nosql',       title:'NoSQL Selection',              badge:'SD-03', crumb:'Data Layer',   keywords:'Cassandra DynamoDB MongoDB NoSQL partition key eventual consistency TTL streams document' },
+  { id:'redis',       title:'Redis Deep',                   badge:'SD-03', crumb:'Data Layer',   keywords:'Redis string hash list set sorted set zset LRU LFU eviction cache-aside write-through write-behind TTL' },
+  { id:'schema',      title:'Schema Design LLD',            badge:'SD-03', crumb:'Data Layer',   keywords:'schema design entities relationships junction table FK index normalization denormalization twitter uber' },
+  { id:'kafka',       title:'Queues & Kafka',               badge:'SD-04', crumb:'Write Path',   keywords:'kafka queue pub sub topic partition offset consumer group event sourcing retention' },
+  { id:'read-path',   title:'CDN, Replicas & Search',       badge:'SD-05', crumb:'Read Path',    keywords:'CDN edge server static dynamic read replica WAL replication lag elasticsearch inverted index full text search' },
+  { id:'scalability', title:'Load Balancing & Hashing',     badge:'SD-06', crumb:'Scalability',  keywords:'load balancer round robin least connections consistent hashing ring virtual nodes stateless' },
+  { id:'reliability', title:'Replication & Consensus',      badge:'SD-07', crumb:'Reliability',  keywords:'replication sync async failover heartbeat split brain raft quorum circuit breaker cascading failure' },
+  { id:'communication',title:'REST, gRPC & WebSockets',    badge:'SD-08', crumb:'Communication',keywords:'REST HTTP gRPC protobuf WebSocket webhook API gateway stateless resources methods status codes' },
+  { id:'lld',         title:'OOP, SOLID & Patterns',        badge:'SD-09', crumb:'LLD Deep',     keywords:'OOP encapsulation inheritance polymorphism abstraction SOLID single responsibility Singleton Factory Observer parking lot library' },
+];
+
+function goto(id) {
+  document.querySelectorAll('.doc-page').forEach(p => p.classList.remove('active'));
+  document.getElementById('p-' + id).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const nav = document.querySelector('[data-page="' + id + '"]');
+  if (nav) nav.classList.add('active');
+  document.getElementById('scroll').scrollTop = 0;
+  const meta = PAGE_META.find(m => m.id === id);
+  if (meta) {
+    document.getElementById('breadcrumb').innerHTML = meta.crumb + ' / <span>' + meta.title + '</span>';
+  }
+  history.replaceState(null, '', '#' + id);
+}
+
+function openSearch() {
+  document.getElementById('search-overlay').classList.add('open');
+  setTimeout(() => document.getElementById('search-input').focus(), 50);
+  runSearch('');
+}
+
+function closeSearch(e) {
+  if (e.target === document.getElementById('search-overlay') || e.key === 'Escape') {
+    document.getElementById('search-overlay').classList.remove('open');
+    document.getElementById('search-input').value = '';
+  }
+}
+
+function runSearch(q) {
+  const results = document.getElementById('search-results');
+  const term = q.toLowerCase().trim();
+  const matches = PAGE_META.filter(m =>
+    !term || m.title.toLowerCase().includes(term) || m.keywords.toLowerCase().includes(term)
+  );
+  if (!matches.length) {
+    results.innerHTML = '<div class="search-empty">No results for "' + q + '"</div>';
+    return;
+  }
+  results.innerHTML = matches.map(m =>
+    `<div class="search-result" onclick="goto('${m.id}');closeSearch({target:document.getElementById('search-overlay')})">
+      <span class="sr-badge">${m.badge}</span>
+      <div><div class="sr-title">${m.title}</div><div class="sr-desc">${m.crumb}</div></div>
+    </div>`
+  ).join('');
+}
+
+function searchNav(e) {
+  if (e.key === 'Escape') closeSearch(e);
+}
+
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); openSearch(); }
+  if (e.key === 'Escape') closeSearch(e);
+});
+
+// Init from hash
+window.addEventListener('DOMContentLoaded', () => {
+  const hash = location.hash.slice(1);
+  if (hash && PAGE_META.find(m => m.id === hash)) goto(hash);
+});
+</script>
+</body>
+</html>
